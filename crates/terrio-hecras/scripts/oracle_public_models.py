@@ -4,9 +4,13 @@ Reads HEC-RAS geometry/plan HDF files with h5py and NumPy only (not the engine) 
 file: the stored Projection and Units System, and per 2D flow area: drawn/stored cell counts,
 physical cell count, face count and a digest of every face polyline (start facepoint, stored
 perimeter vertices, end facepoint), a digest of the stored perimeter ring, and digests of the
-Maximum Water Surface (cells) and Maximum Face Velocity (faces) value and time rows; plus the
-count and identity digest of the 1D cross sections, river reaches, storage areas, structures and
-2D boundary-condition lines. Usage:
+Maximum Water Surface (cells) and Maximum Face Velocity (faces) value and time rows, of the
+static cell and face arrays (minimum elevations, Manning's n, face normals and lengths, face cell
+indexes), of Water Surface / Face Velocity at one stored output row and of Water Surface's
+maximum over all rows (value at the first maximum, and its row); the count and identity digest
+of the 1D cross sections, river reaches, storage areas, structures and 2D boundary-condition
+lines; and per-row digests of the 1D cross-section summaries and of the cross-section results
+at one stored row (unsteady) or profile (steady), in geometry attribute-row order. Usage:
 
     python -I oracle_public_models.py <test-data-dir> <out.json> <relative file>...
 
@@ -22,7 +26,12 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-SUMMARY = "Results/Unsteady/Output/Output Blocks/Base Output/Summary Output/2D Flow Areas"
+BASE = "Results/Unsteady/Output/Output Blocks/Base Output"
+SUMMARY = f"{BASE}/Summary Output/2D Flow Areas"
+SERIES = f"{BASE}/Unsteady Time Series"
+STEADY = "Results/Steady/Output/Output Blocks/Base Output/Steady Profiles"
+XS_SUMMARIES = ["Maximum Water Surface", "Maximum Flow", "Maximum Channel Velocity"]
+XS_RESULTS = ["Water Surface", "Flow"]
 
 
 def text(v):
@@ -35,6 +44,24 @@ def text(v):
 
 def digest(values):
     return hashlib.sha256(np.asarray(values, dtype="<f8").tobytes()).hexdigest()
+
+
+def int_digest(values):
+    return hashlib.sha256(np.asarray(values, dtype="<i8").tobytes()).hexdigest()
+
+
+def columns_digest(ds, rows):
+    """Per stored column of an (elements,) or (elements, k) array, the digest over `rows`."""
+    v = ds[()]
+    v = v.reshape(len(v), -1)
+    pick = int_digest if v.dtype.kind in "iu" else digest
+    return [pick(v[rows, c]) for c in range(v.shape[1])]
+
+
+def time_row(f):
+    """The stored output row the oracle reads time-step values at: the middle row."""
+    t = f.get(f"{SERIES}/Time")
+    return None if t is None else len(t) // 2
 
 
 def lines_digest(lines):
@@ -117,6 +144,33 @@ def main(root, out, files):
                     mesh["maximum_water_surface"] = summary(s["Maximum Water Surface"], drawn)
                 if s is not None and "Maximum Face Velocity" in s:
                     mesh["maximum_face_velocity"] = summary(s["Maximum Face Velocity"], np.arange(len(lines)))
+                faces = np.arange(len(lines))
+                static = {}
+                for key, dataset, rows in [
+                    ("cells_minimum_elevation", "Cells Minimum Elevation", drawn),
+                    ("cells_mannings_n", "Cells Center Manning's n", drawn),
+                    ("faces_minimum_elevation", "Faces Minimum Elevation", faces),
+                    ("faces_normal_and_length", "Faces NormalUnitVector and Length", faces),
+                    ("faces_cells", "Faces Cell Indexes", faces),
+                ]:
+                    if dataset in g:
+                        static[key] = columns_digest(g[dataset], rows)
+                mesh["static"] = static
+                row = time_row(f)
+                ts = f.get(f"{SERIES}/2D Flow Areas/{name}")
+                if row is not None and ts is not None:
+                    step = {"row": row}
+                    if "Water Surface" in ts:
+                        wse = ts["Water Surface"][()]
+                        step["water_surface"] = digest(wse[row][drawn])
+                        at = np.argmax(wse, axis=0)
+                        mesh["water_surface_max"] = {
+                            "value_sha256": digest(wse[at, np.arange(wse.shape[1])][drawn]),
+                            "row_sha256": int_digest(at[drawn]),
+                        }
+                    if "Face Velocity" in ts:
+                        step["face_velocity"] = digest(ts["Face Velocity"][row])
+                    mesh["time_step"] = step
                 entry["meshes"][name] = mesh
             families = {}
             for layer, table, fields in [
@@ -130,6 +184,26 @@ def main(root, out, files):
                 if rows is not None:
                     families[layer] = {"fields": fields, "count": len(rows), "sha256": strings_digest(rows)}
             entry["families"] = families
+            one_d = {}
+            xs_rows = f["Geometry/Cross Sections/Attributes"].shape[0] if "Geometry/Cross Sections/Attributes" in f else None
+            xs = f.get(f"{BASE}/Summary Output/Cross Sections")
+            if xs is not None and xs_rows:
+                for var in XS_SUMMARIES:
+                    if var in xs and xs[var].shape[-1] == xs_rows:
+                        v = xs[var][()].reshape(-1, xs_rows)
+                        one_d[var] = [digest(r) for r in v]
+            row = time_row(f)
+            results = f.get(f"{SERIES}/Cross Sections")
+            if results is not None and row is not None and xs_rows:
+                stamp = f[f"{SERIES}/Time Date Stamp"][row]
+                one_d["unsteady"] = {"row": row, "label": text(stamp), "values": {v: digest(results[v][row]) for v in XS_RESULTS if v in results}}
+            steady = f.get(f"{STEADY}/Cross Sections")
+            if steady is not None and xs_rows:
+                names = [text(n) for n in f[f"{STEADY}/Profile Names"][()]]
+                one_d["steady"] = {"row": 1, "label": names[1], "values": {v: digest(steady[v][1]) for v in XS_RESULTS if v in steady}}
+            if row is not None and "Time Date Stamp" in f.get(SERIES, {}):
+                entry["time_step"] = {"row": row, "date_stamp": text(f[f"{SERIES}/Time Date Stamp"][row]), "days": float(f[f"{SERIES}/Time"][row])}
+            entry["one_d"] = one_d
         report[rel] = entry
     Path(out).write_text(json.dumps(report, indent=2))
 

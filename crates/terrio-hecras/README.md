@@ -22,15 +22,15 @@ terrio::write_vector(&[cells.layer], "muncie_cells.fgb", &Default::default())?;
 
 `HecRasHdf::layer_names()` lists the layers a file stores; `read_layer(name)` reads one with
 default options. Mesh layers also have methods taking `MeshOptions` (meshes, geometry policy,
-joined summaries, byte budgets).
+joined values, byte budgets), and `cross_sections(&CrossSectionOptions)` joins 1D results.
 
 | Layer | Geometry | Fields | Engine source |
 |---|---|---|---|
-| `mesh_cells` | Polygon | `mesh_name`, `cell_id`, joined cell summaries | `read_topology` + `assemble` (API 10 ring order) |
-| `mesh_cell_points` | Point | `mesh_name`, `cell_id`, `is_ghost`, joined cell summaries | `mesh_geometry` (physical count) + `CellCenters` |
-| `mesh_faces` | LineString | `mesh_name`, `face_id`, joined face summaries | `Topology::face_lines` |
+| `mesh_cells` | Polygon | `mesh_name`, `cell_id`, joined cell values | `read_topology` + `assemble` (API 10 ring order) |
+| `mesh_cell_points` | Point | `mesh_name`, `cell_id`, `is_ghost`, joined cell values | `mesh_geometry` (physical count) + `CellCenters` |
+| `mesh_faces` | LineString | `mesh_name`, `face_id`, joined face values | `Topology::face_lines` |
 | `mesh_perimeters` | Polygon | `mesh_name` | `read_mesh_perimeter` |
-| `cross_sections` | LineString | `source_row`, stored columns (`river`, `reach`, `rs`, `name`, bank stations, ...) | `one_d_line_family(CrossSectionCutLines)` |
+| `cross_sections` | LineString | `source_row`, stored columns (`river`, `reach`, `rs`, `name`, bank stations, ...), joined 1D results | `one_d_line_family(CrossSectionCutLines)` |
 | `river_centerlines`, `river_bank_lines`, `river_edge_lines`, `river_flow_paths` | LineString | `source_row`, stored columns | `one_d_line_family(...)` |
 | `storage_areas` | Polygon | `source_row`, stored columns | `one_d_line_family(StorageAreaPolygons)` |
 | `structures` | LineString | `source_row`, stored columns (`type`, `river`, `reach`, `rs`, `connection`, ...) | `one_d_line_family(StructureCenterlines)` |
@@ -58,6 +58,32 @@ joined summaries, byte budgets).
   `SummaryField::units` gives the units the engine can prove; it is `None` otherwise and is never
   inferred.
 
+### Joined values
+
+Every joined value is a stored number, joined by the engine's element identity; asking for a
+value a mesh or file does not store is an error, never an empty field.
+
+| `MeshOptions` | Fields | Stored source |
+|---|---|---|
+| `with_summary(v)` | `<v>`, `<v>_time` | `Summary Output/2D Flow Areas/<mesh>/<v>` |
+| `with_attribute(MinimumElevation)` | `minimum_elevation` | `Cells Minimum Elevation` (cells), `Faces Minimum Elevation` (faces) |
+| `with_attribute(ManningsN)` | `mannings_n` | `Cells Center Manning's n` (cells) |
+| `with_attribute(FaceNormalAndLength)` | `normal_x`, `normal_y`, `length` | `Faces NormalUnitVector and Length` (faces) |
+| `with_attribute(FaceCells)` | `cell_a`, `cell_b` (stored cell indices) | `Faces Cell Indexes` (faces) |
+| `with_series(v).at_time_step(row)` | `<v>` at one stored output row; `MeshLayer::time_step` gives its stored `Time` and `Time Date Stamp` | `Unsteady Time Series/2D Flow Areas/<mesh>/<v>` (`Water Surface`, `Face Velocity`, `Depth`, ...) |
+| `with_extreme(v, Maximum)` (or `Minimum`) | `<v>_max`, `<v>_max_row` | the engine's reduction of the stored series over every row (first occurrence; NaN propagates) |
+
+| `CrossSectionOptions` | Fields | Stored source |
+|---|---|---|
+| `with_summary(v)` | `<v>` (row 0), `<v>_time` (a proven Time row), `<v>_<label>` (other labelled rows) | `Summary Output/Cross Sections/<v>` (`Maximum Water Surface`: `Max WSEL`, `Flow at Max WSEL`, `Time at Max WSEL`) |
+| `with_unsteady(v, row)` / `with_steady(v, profile)` | `<v>`; `CrossSectionLayer::row_label` gives the stored time stamp or profile name | `Unsteady Time Series/Cross Sections/<v>`, `Steady Profiles/Cross Sections/<v>` |
+
+1D values are joined by the cross-section identity the engine validates (River, Reach and RS
+against `Geometry/Cross Sections/Attributes`), so a result column always lands on its own cut
+line. Units are reported per field (`CrossSectionField::units`) exactly as stored. Depth is not
+a stored 2D summary in HEC-RAS 6.x and 7.0, so no depth field is derived here; HEC-RAS 5.0
+plans store a `Depth` time series, which `with_series` and `with_extreme` read.
+
 ## Errors
 
 Every refusal is an error, never an empty or partial layer. Messages start with the engine's
@@ -73,7 +99,10 @@ stable spellings, such as `HEC-RAS unsupported(identity_layout): ...`.
 | CRS evidence that is not usable | `Error::Crs` |
 
 Some real files are refused today. HEC-RAS 5.0 files such as HEC's `BaldEagleDamBrk.p07.hdf`
-store summaries without a `Location`, and the pinned engine refuses them. Engine PR
+store summaries without a `Location`, and the pinned engine refuses them. Their static mesh arrays
+are refused too, because the engine reads them through `2D Flow Areas/Attributes`, which 5.0
+files lack. Their time series read (`Water Surface`, `Depth`, ...), so `with_extreme` gives a
+maximum water surface for them. Engine PR
 gpt-cmdr/ras-commander-fast-hdf#9 qualifies their water-surface summaries; their face summaries
 stay refused. Through terrio a refusal surfaces as an error, never as an empty layer.
 
@@ -82,7 +111,7 @@ stay refused. Through terrio a refusal surfaces as an error, never as an empty l
 | Feature | Default | Adds |
 |---|---|---|
 | `mesh` | yes | The four mesh layers |
-| `results` | yes | Summary results joined to cells and faces (implies `mesh`) |
+| `results` | yes | Summaries, time-step values and series extremes joined to cells and faces, and 1D results joined to `cross_sections` (implies `mesh`) |
 
 With no features, the geometry family layers, `crs` and `units_system` are built.
 
@@ -106,4 +135,11 @@ TERRIO_HECRAS_TEST_DATA=<models> TERRIO_HECRAS_ORACLE=<models>/oracle.json cargo
 Chippewa_2D, DavisStormSystem, ConSpan, Bald Eagle Creek), as downloaded by ras-commander's
 `RasExamples`, with computed plan HDFs. On 29 such files the test checks 258,350 cells,
 538,946 faces and 1,203 family features against h5py: geometry, identities, CRS, units,
-ghost counts, and Maximum Water Surface and Maximum Face Velocity values and time rows.
+ghost counts, and Maximum Water Surface and Maximum Face Velocity values and time rows. It also
+checks 1,370,298 joined mesh values (static cell and face arrays, Water Surface and Face Velocity
+at one output row with its time stamp, and the Water Surface maximum and its row) and 2,216
+cross-section values (Muncie's Maximum Water Surface, Maximum Flow and Maximum Channel Velocity
+rows, unsteady Water Surface and Flow at one row, and ConSpan's steady profiles), bit for bit.
+
+`tests/results.rs` checks the same joins with exact values on the synthetic plan
+`tests/fixtures/results_mesh_xs.h5`, written by `scripts/make_results_fixture.py`.

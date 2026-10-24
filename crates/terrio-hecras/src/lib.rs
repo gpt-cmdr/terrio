@@ -16,7 +16,10 @@
 //!   without one gives layers without a CRS; conflicting, malformed, unsupported or corrupt
 //!   projection evidence is an error ([`HecRasHdf::crs`]).
 //! - **Results** are stored values, unconverted: a summary such as `Maximum Water Surface` becomes
-//!   a float field, and its stored time row (when the engine proves one) a second field.
+//!   a float field, and its stored time row (when the engine proves one) a second field. Static
+//!   mesh arrays, time-step values and the engine's series extremes join to mesh layers
+//!   ([`MeshOptions`]); 1D summaries and results join to `cross_sections` by the engine's
+//!   validated cross-section identity ([`HecRasHdf::cross_sections`]).
 //! - **Refusals** (unsupported, corrupt, absent, over budget) are errors (see [`error`]), never
 //!   empty layers or partial results.
 //!
@@ -42,9 +45,17 @@ pub mod error;
 mod families;
 #[cfg(feature = "mesh")]
 mod mesh;
+#[cfg(feature = "results")]
+mod one_d;
 
 #[cfg(feature = "mesh")]
-pub use mesh::{MeshCellLayer, MeshCellOptions, MeshLayer, MeshOptions, OmittedCell, SummaryField};
+pub use mesh::{
+    Extreme, JoinedField, MeshAttribute, MeshCellLayer, MeshCellOptions, MeshLayer, MeshOptions, OmittedCell, SummaryField, TimeStep,
+};
+#[cfg(feature = "results")]
+pub use one_d::{CrossSectionField, CrossSectionLayer, CrossSectionOptions};
+#[cfg(feature = "results")]
+pub use ras_commander_rust::hdf::ResultMode;
 #[cfg(feature = "mesh")]
 pub use ras_commander_rust::mesh::{GeometryPolicy, OmissionKind};
 pub use terrio::Layer;
@@ -99,6 +110,39 @@ pub(crate) fn field_name(stored: &str) -> String {
         }
     }
     out.trim_matches('_').to_string()
+}
+
+/// Stored numbers as field values: floats (`f32` widened exactly) or integers.
+#[cfg(feature = "mesh")]
+pub(crate) fn numbers(values: ras_commander_rust::hdf::NumericValues, what: &str) -> terrio::Result<Vec<terrio::FieldValue>> {
+    use ras_commander_rust::hdf::NumericValues as N;
+    use terrio::FieldValue as V;
+    let int = V::Integer;
+    Ok(match values {
+        N::F32(v) => v.into_iter().map(|x| V::Float(f64::from(x))).collect(),
+        N::F64(v) => v.into_iter().map(V::Float).collect(),
+        N::I8(v) => v.into_iter().map(|x| int(x.into())).collect(),
+        N::I16(v) => v.into_iter().map(|x| int(x.into())).collect(),
+        N::I32(v) => v.into_iter().map(|x| int(x.into())).collect(),
+        N::I64(v) => v.into_iter().map(int).collect(),
+        N::U8(v) => v.into_iter().map(|x| int(x.into())).collect(),
+        N::U16(v) => v.into_iter().map(|x| int(x.into())).collect(),
+        N::U32(v) => v.into_iter().map(|x| int(x.into())).collect(),
+        N::U64(v) => v
+            .into_iter()
+            .map(|x| i64::try_from(x).map(int).map_err(|_| terrio::Error::Unsupported(format!("{what}: value above i64"))))
+            .collect::<terrio::Result<_>>()?,
+        _ => return Err(terrio::Error::Unsupported(format!("{what}: unmapped numeric kind"))),
+    })
+}
+
+/// The field type of values from [`numbers`] (all share one).
+#[cfg(feature = "mesh")]
+pub(crate) fn kind_of(values: &[terrio::FieldValue]) -> terrio::FieldType {
+    match values.first() {
+        Some(terrio::FieldValue::Integer(_)) => terrio::FieldType::Integer,
+        _ => terrio::FieldType::Float,
+    }
 }
 
 /// A HEC-RAS geometry or plan HDF file, opened read-only.

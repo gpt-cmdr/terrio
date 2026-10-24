@@ -9,7 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use terrio::{FieldValue, Geometry, Layer};
-use terrio_hecras::{HecRasHdf, MeshOptions};
+use terrio_hecras::{CrossSectionOptions, Extreme, HecRasHdf, MeshAttribute, MeshLayer, MeshOptions};
 
 /// Reads the pinned engine refuses on these files, with the refusal it gives. ras-commander has
 /// no h5py reading for them either (HEC-RAS 5.0 files without `2D Flow Areas/Attributes`).
@@ -26,7 +26,17 @@ const KNOWN_REFUSALS: &[(&str, &str, &str)] = &[
     ("BaldEagleDamBrk.p07.hdf", "mesh_cell_points", "HEC-RAS not_found"),
     ("BaldEagleDamBrk.p08.hdf", "mesh_cell_points", "HEC-RAS not_found"),
     ("BaldEagleDamBrk.p19.hdf", "mesh_cell_points", "HEC-RAS not_found"),
+    // Static mesh arrays: the engine reads them through the same `2D Flow Areas/Attributes`
+    // descriptor. `*` matches every static array key.
+    ("BaldEagleDamBrk.g12.hdf", "static:*", "HEC-RAS not_found"),
+    ("BaldEagleDamBrk.p07.hdf", "static:*", "HEC-RAS not_found"),
+    ("BaldEagleDamBrk.p08.hdf", "static:*", "HEC-RAS not_found"),
+    ("BaldEagleDamBrk.p19.hdf", "static:*", "HEC-RAS not_found"),
 ];
+
+fn refusal_matches(listed: &str, what: &str) -> bool {
+    listed.strip_suffix('*').map_or(listed == what, |prefix| what.starts_with(prefix))
+}
 
 fn sha256_hex(data: &[u8]) -> String {
     Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
@@ -45,16 +55,46 @@ fn lines_digest<'a>(lines: impl Iterator<Item = Vec<(f64, f64)>> + 'a) -> String
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The oracle's digest of a column over `rows`: little-endian f64 for floats, i64 for integers.
 fn float_column(layer: &Layer, rows: std::ops::Range<usize>, field: &str) -> String {
+    let features: Vec<_> = layer.features[rows].iter().collect();
+    column_digest(layer, &features, field)
+}
+
+fn column_digest(layer: &Layer, features: &[&terrio::Feature], field: &str) -> String {
     let i = layer.schema.fields().iter().position(|f| f.name == field).unwrap_or_else(|| panic!("no field {field}"));
-    let bytes: Vec<u8> = layer.features[rows]
+    let bytes: Vec<u8> = features
         .iter()
         .flat_map(|f| match f.attributes[i] {
             FieldValue::Float(v) => v.to_le_bytes(),
+            FieldValue::Integer(v) => v.to_le_bytes(),
             ref other => panic!("{field}: {other:?}"),
         })
         .collect();
     sha256_hex(&bytes)
+}
+
+/// Per mesh (in `order`), the feature rows of a mesh layer.
+fn mesh_rows(layer: &MeshLayer, order: &[String]) -> Vec<(String, std::ops::Range<usize>)> {
+    order
+        .iter()
+        .map(|name| {
+            let mesh = FieldValue::Text(name.clone());
+            let first = layer.layer.features.iter().position(|f| f.attributes[0] == mesh).unwrap();
+            let n = layer.layer.features[first..].iter().take_while(|f| f.attributes[0] == mesh).count();
+            (name.clone(), first..first + n)
+        })
+        .collect()
+}
+
+/// Features in attribute-row (`source_row`) order.
+fn by_source_row(layer: &Layer) -> Vec<&terrio::Feature> {
+    let mut features: Vec<_> = layer.features.iter().collect();
+    features.sort_by_key(|f| match f.attributes[0] {
+        FieldValue::Integer(r) => r,
+        ref other => panic!("source_row {other:?}"),
+    });
+    features
 }
 
 struct Check<'a> {
@@ -65,7 +105,7 @@ struct Check<'a> {
 impl Check<'_> {
     /// `Some(value)` on success; `None` for a listed refusal (checked).
     fn expect<T>(&mut self, what: &str, r: terrio::Result<T>) -> Option<T> {
-        let known = KNOWN_REFUSALS.iter().find(|(f, w, _)| *f == self.file && *w == what);
+        let known = KNOWN_REFUSALS.iter().find(|(f, w, _)| *f == self.file && refusal_matches(w, what));
         match (r, known) {
             (Ok(v), None) => Some(v),
             (Ok(_), Some(_)) => panic!("{} {what}: now succeeds; update KNOWN_REFUSALS and the oracle checks", self.file),
@@ -94,6 +134,7 @@ fn public_models_match_the_h5py_oracle() {
     assert!(!files.is_empty(), "the oracle lists no files");
     let mut seen = Vec::new();
     let (mut cells_checked, mut faces_checked, mut families_checked) = (0usize, 0usize, 0usize);
+    let (mut joins_checked, mut xs_checked) = (0usize, 0usize);
     for (file, want) in files {
         let path = PathBuf::from(&root).join(file);
         assert_eq!(sha256_hex(&std::fs::read(&path).unwrap()), want["sha256"].as_str().unwrap(), "{file}: not the file the oracle read");
@@ -218,6 +259,105 @@ fn public_models_match_the_h5py_oracle() {
             }
         }
 
+        if !meshes.is_empty() {
+            let order = hdf.mesh_names().unwrap();
+            // Static mesh arrays: stored on every mesh, or the request is an error.
+            for (key, attribute, on_cells) in [
+                ("cells_minimum_elevation", MeshAttribute::MinimumElevation, true),
+                ("cells_mannings_n", MeshAttribute::ManningsN, true),
+                ("faces_minimum_elevation", MeshAttribute::MinimumElevation, false),
+                ("faces_normal_and_length", MeshAttribute::FaceNormalAndLength, false),
+                ("faces_cells", MeshAttribute::FaceCells, false),
+            ] {
+                let options = MeshOptions::default().with_attribute(attribute);
+                let r = if on_cells { hdf.mesh_cells(&options) } else { hdf.mesh_faces(&options) };
+                if !meshes.values().all(|m| m["static"].get(key).is_some()) {
+                    assert!(r.is_err(), "{file} {key}: an array a mesh does not store must be an error");
+                    continue;
+                }
+                let Some(l) = check.expect(&format!("static:{key}"), r) else { continue };
+                assert_eq!(l.joined.len(), 1);
+                for (name, rows) in mesh_rows(&l, &order) {
+                    let want: Vec<_> = meshes[&name]["static"][key].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+                    assert_eq!(l.joined[0].fields.len(), want.len(), "{file} {name} {key} columns");
+                    for (field, digest) in l.joined[0].fields.iter().zip(want) {
+                        assert_eq!(float_column(&l.layer, rows.clone(), field), digest, "{file} {name} {key} {field}");
+                    }
+                    joins_checked += rows.len();
+                }
+            }
+            // Time-step values and the Water Surface maximum over every stored row.
+            if let Some(step) = want.get("time_step") {
+                let row = step["row"].as_u64().unwrap();
+                for (variable, field, on_cells) in [("Water Surface", "water_surface", true), ("Face Velocity", "face_velocity", false)] {
+                    if !meshes.values().all(|m| m.get("time_step").is_some_and(|t| t.get(field).is_some())) {
+                        continue;
+                    }
+                    let options = MeshOptions::default().with_series(variable).at_time_step(row);
+                    let r = if on_cells { hdf.mesh_cells(&options) } else { hdf.mesh_faces(&options) };
+                    let Some(l) = check.expect(field, r) else { continue };
+                    let t = l.time_step.as_ref().unwrap();
+                    assert_eq!(t.row, row);
+                    assert_eq!(t.date_stamp.as_deref(), step["date_stamp"].as_str(), "{file} time stamp");
+                    assert_eq!(t.days, step["days"].as_f64(), "{file} time days");
+                    for (name, rows) in mesh_rows(&l, &order) {
+                        let want = meshes[&name]["time_step"][field].as_str().unwrap();
+                        assert_eq!(float_column(&l.layer, rows.clone(), field), want, "{file} {name} {field} at row {row}");
+                        joins_checked += rows.len();
+                    }
+                }
+                if meshes.values().all(|m| m.get("water_surface_max").is_some()) {
+                    let options = MeshOptions::default().with_extreme("Water Surface", Extreme::Maximum);
+                    if let Some(l) = check.expect("water_surface_max", hdf.mesh_cells(&options)) {
+                        assert_eq!(l.joined[0].fields, ["water_surface_max", "water_surface_max_row"]);
+                        for (name, rows) in mesh_rows(&l, &order) {
+                            let w = &meshes[&name]["water_surface_max"];
+                            assert_eq!(float_column(&l.layer, rows.clone(), "water_surface_max"), w["value_sha256"].as_str().unwrap());
+                            assert_eq!(float_column(&l.layer, rows.clone(), "water_surface_max_row"), w["row_sha256"].as_str().unwrap());
+                            joins_checked += rows.len();
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1D results on the cross sections, in attribute-row (source_row) order.
+        let one_d = want["one_d"].as_object().unwrap();
+        for (variable, rows) in one_d.iter().filter(|(k, _)| !matches!(k.as_str(), "unsteady" | "steady")) {
+            let x = hdf
+                .cross_sections(&CrossSectionOptions::default().with_summary(variable))
+                .unwrap_or_else(|e| panic!("{file} {variable}: {e}"));
+            let fields = &x.fields[0].fields;
+            let rows = rows.as_array().unwrap();
+            assert_eq!(fields.len(), rows.len(), "{file} {variable} rows");
+            assert_eq!(fields[0], terrio_field(variable));
+            let features = by_source_row(&x.layer);
+            for (field, digest) in fields.iter().zip(rows) {
+                assert_eq!(column_digest(&x.layer, &features, field), digest.as_str().unwrap(), "{file} {variable} {field}");
+            }
+            xs_checked += features.len() * fields.len();
+        }
+        for mode in ["unsteady", "steady"] {
+            let Some(r) = one_d.get(mode) else { continue };
+            let row = r["row"].as_u64().unwrap();
+            for (variable, digest) in r["values"].as_object().unwrap() {
+                let options = if mode == "steady" {
+                    CrossSectionOptions::default().with_steady(variable, row)
+                } else {
+                    CrossSectionOptions::default().with_unsteady(variable, row)
+                };
+                let x = hdf.cross_sections(&options).unwrap_or_else(|e| panic!("{file} {mode} {variable}: {e}"));
+                assert_eq!(x.row_label.as_deref(), r["label"].as_str(), "{file} {mode} row label");
+                let features = by_source_row(&x.layer);
+                assert_eq!(
+                    column_digest(&x.layer, &features, &terrio_field(variable)),
+                    digest.as_str().unwrap(),
+                    "{file} {mode} {variable}"
+                );
+                xs_checked += features.len();
+            }
+        }
+
         // Family identities, for the families whose geometry the file stores.
         for (layer, fam) in want["families"].as_object().unwrap() {
             if !layers.iter().any(|l| l == layer) {
@@ -254,10 +394,14 @@ fn public_models_match_the_h5py_oracle() {
     }
     for (file, what, _) in KNOWN_REFUSALS {
         if files.contains_key(*file) {
-            assert!(seen.iter().any(|(f, w)| f == file && w == what), "{file} {what}: listed refusal not exercised");
+            assert!(seen.iter().any(|(f, w)| f == file && refusal_matches(what, w)), "{file} {what}: listed refusal not exercised");
         }
     }
-    eprintln!("checked {cells_checked} cells, {faces_checked} faces, {families_checked} family features; {} known refusals", seen.len());
+    eprintln!(
+        "checked {cells_checked} cells, {faces_checked} faces, {families_checked} family features, {joins_checked} joined mesh values, \
+         {xs_checked} cross-section values; {} known refusals",
+        seen.len()
+    );
 }
 
 /// The field name terrio-hecras gives a stored column (lower case, other runs as `_`).
