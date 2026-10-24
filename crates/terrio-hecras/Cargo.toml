@@ -21,10 +21,10 @@ results = ["mesh", "ras-commander-rust/results"]
 
 [dependencies]
 # terrio's data model only (layers, features, fields, CRS, errors): no format drivers.
-terrio = { path = "../terrio", version = "0.4.2", default-features = false }
+terrio = { path = "../terrio", version = "0.5.0", default-features = false }
 # The HEC-RAS engine shared with ras-commander. Every HEC-RAS rule (layouts, identities, ring
 # order, CRS evidence, units, refusals) lives there; this crate only translates its values.
-ras-commander-rust = { git = "https://github.com/gpt-cmdr/ras-commander-fast-hdf", rev = "a7243bfa36b2fb7d2d54c1a49ea2906e68d6ef3d", default-features = false, features = ["hdf"] }
+ras-commander-rust = { git = "https://github.com/gpt-cmdr/ras-commander-fast-hdf", rev = "3b50d041a0bd166a756db4783241468b22a60b27", default-features = false, features = ["hdf"] }
 
 [dev-dependencies]
 serde_json = "1"

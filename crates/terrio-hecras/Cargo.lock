@@ -280,9 +280,9 @@ dependencies = [
 
 [[package]]
 name = "float_next_after"
-version = "1.0.0"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bf7cc16383c4b8d58b9905a8509f02926ce3058053c056376248d958c9df1e8"
+checksum = "37007738a80ea34f969af54a3390dd72cacdef654974cfd449c9f6f72dbaac10"
 
 [[package]]
 name = "foldhash"
@@ -302,9 +302,9 @@ dependencies = [
 
 [[package]]
 name = "geo"
-version = "0.29.3"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34f0e6e028c581e82e6822a68869514e94c25e7f8ea669a2d8595bdf7461ccc5"
+checksum = "30eb1fdc57c1e5cfd11826fe0caec4b9dc7901f3758263bb506228d88c8d9e9a"
 dependencies = [
  "float_next_after",
  "geo-types",
@@ -312,8 +312,12 @@ dependencies = [
  "i_overlay",
  "log",
  "num-traits",
+ "rand",
+ "rand_pcg",
  "robust",
  "rstar",
+ "sif-itree",
+ "spade",
 ]
 
 [[package]]
@@ -326,6 +330,7 @@ dependencies = [
  "num-traits",
  "rstar",
  "serde",
+ "spade",
  "thiserror 2.0.21",
 ]
 
@@ -389,7 +394,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 [[package]]
 name = "hdf5-core"
 version = "0.9.1"
-source = "git+https://github.com/gpt-cmdr/ras-commander-fast-hdf?rev=a7243bfa36b2fb7d2d54c1a49ea2906e68d6ef3d#a7243bfa36b2fb7d2d54c1a49ea2906e68d6ef3d"
+source = "git+https://github.com/gpt-cmdr/ras-commander-fast-hdf?rev=3b50d041a0bd166a756db4783241468b22a60b27#3b50d041a0bd166a756db4783241468b22a60b27"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -397,7 +402,7 @@ dependencies = [
 [[package]]
 name = "hdf5-reader"
 version = "0.9.1"
-source = "git+https://github.com/gpt-cmdr/ras-commander-fast-hdf?rev=a7243bfa36b2fb7d2d54c1a49ea2906e68d6ef3d#a7243bfa36b2fb7d2d54c1a49ea2906e68d6ef3d"
+source = "git+https://github.com/gpt-cmdr/ras-commander-fast-hdf?rev=3b50d041a0bd166a756db4783241468b22a60b27#3b50d041a0bd166a756db4783241468b22a60b27"
 dependencies = [
  "flate2",
  "hdf5-core",
@@ -424,24 +429,24 @@ dependencies = [
 
 [[package]]
 name = "i_float"
-version = "1.6.0"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "775f9961a8d2f879725da8aff789bb20a3ddf297473e0c90af75e69313919490"
+checksum = "813145bb0ad5b60f55cbbf3c74cdceda1c0a9d253b35c4cc36ae0df7887cb78f"
 dependencies = [
- "serde",
+ "libm",
 ]
 
 [[package]]
 name = "i_key_sort"
-version = "0.2.0"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "347c253b4748a1a28baf94c9ce133b6b166f08573157e05afe718812bc599fcd"
+checksum = "d73d122b937fca067feb0ad74f62388920272b27c356d4df2d0cfdd59e044cf0"
 
 [[package]]
 name = "i_overlay"
-version = "1.9.4"
+version = "4.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01882ce5ed786bf6e8f5167f171a4026cd129ce17d9ff5cbf1e6749b98628ece"
+checksum = "8dd314b4668e2b3a12508f2e125558c82a6c0a8636fa5107a900f79ce414e450"
 dependencies = [
  "i_float",
  "i_key_sort",
@@ -451,19 +456,18 @@ dependencies = [
 
 [[package]]
 name = "i_shape"
-version = "1.6.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27dbe9e5238d6b9c694c08415bf00fb370b089949bd818ab01f41f8927b8774c"
+checksum = "bfa9eac533d7509a8ab87672b60ac610c17240f9ea4851d26227689fdfe349c8"
 dependencies = [
  "i_float",
- "serde",
 ]
 
 [[package]]
 name = "i_tree"
-version = "0.8.3"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "155181bc97d770181cf9477da51218a19ee92a8e5be642e796661aee2b601139"
+checksum = "4804bdc1dc124eb7e1aa9e144ecc04096bcf787a10a15fa44af682b51f0f6cce"
 
 [[package]]
 name = "image-webp"
@@ -982,15 +986,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "rand"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+dependencies = [
+ "rand_core",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_pcg"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+dependencies = [
+ "rand_core",
+]
+
+[[package]]
 name = "ras-commander-rust"
 version = "0.1.0"
-source = "git+https://github.com/gpt-cmdr/ras-commander-fast-hdf?rev=a7243bfa36b2fb7d2d54c1a49ea2906e68d6ef3d#a7243bfa36b2fb7d2d54c1a49ea2906e68d6ef3d"
+source = "git+https://github.com/gpt-cmdr/ras-commander-fast-hdf?rev=3b50d041a0bd166a756db4783241468b22a60b27#3b50d041a0bd166a756db4783241468b22a60b27"
 dependencies = [
  "flate2",
- "geo",
  "hdf5-reader",
  "ndarray",
  "rayon",
+ "robust",
 ]
 
 [[package]]
@@ -1169,6 +1197,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "sif-itree"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7f45b8998ced5134fb1d75732c77842a3e888f19c1ff98481822e8fbfbf930b"
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1179,6 +1213,18 @@ name = "smallvec"
 version = "1.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
+
+[[package]]
+name = "spade"
+version = "2.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9699399fd9349b00b184f5635b074f9ec93afffef30c853f8c875b32c0f8c7fa"
+dependencies = [
+ "hashbrown 0.16.1",
+ "num-traits",
+ "robust",
+ "smallvec",
+]
 
 [[package]]
 name = "stable_deref_trait"
@@ -1234,9 +1280,10 @@ dependencies = [
 
 [[package]]
 name = "terrio"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "flate2",
+ "geo",
  "geographiclib-rs",
  "half",
  "image-webp",
@@ -1248,6 +1295,7 @@ dependencies = [
  "png 0.18.1",
  "quick-xml",
  "rayon",
+ "rstar",
  "ruzstd 0.9.1",
  "serde",
  "serde_json",
