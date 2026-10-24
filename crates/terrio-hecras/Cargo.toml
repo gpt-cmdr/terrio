@@ -1,0 +1,36 @@
+[package]
+name = "terrio-hecras"
+description = "HEC-RAS geometry and plan HDF files as terrio vector layers, read through the ras-commander-rust engine"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.90"
+repository = "https://github.com/opengeos/terrio"
+# The engine is not on crates.io: it is pinned by Git revision below, which crates.io refuses.
+publish = false
+
+# Not a member of terrio's workspace (see the root Cargo.toml): this crate has its own lock file.
+[workspace]
+
+[features]
+default = ["mesh", "results"]
+## 2D mesh layers: cell polygons with their mesh name and cell ID.
+mesh = ["ras-commander-rust/mesh"]
+## Stored 2D results joined to mesh features (summary arrays such as Maximum Water Surface).
+results = ["mesh", "ras-commander-rust/results"]
+
+[dependencies]
+# terrio's data model only (layers, features, fields, CRS, errors): no format drivers.
+terrio = { path = "../terrio", version = "0.5.0", default-features = false }
+# The HEC-RAS engine shared with ras-commander. Every HEC-RAS rule (layouts, identities, ring
+# order, CRS evidence, units, refusals) lives there; this crate only translates its values.
+ras-commander-rust = { git = "https://github.com/gpt-cmdr/ras-commander-fast-hdf", rev = "3b50d041a0bd166a756db4783241468b22a60b27", default-features = false, features = ["hdf"] }
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+
+[[example]]
+name = "hecras_info"
+required-features = ["mesh"]
