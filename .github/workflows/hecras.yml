@@ -1,0 +1,61 @@
+name: HEC-RAS layers
+
+# crates/terrio-hecras is outside terrio's workspace (it depends on the HEC-RAS engine by Git
+# revision), so terrio's CI does not build it: this job does, when it or terrio's core changes.
+on:
+  push:
+    branches: [main]
+    paths: ["crates/terrio-hecras/**", "crates/terrio/**", ".github/workflows/hecras.yml"]
+  pull_request:
+    paths: ["crates/terrio-hecras/**", "crates/terrio/**", ".github/workflows/hecras.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    working-directory: crates/terrio-hecras
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/terrio-hecras
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo fmt -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
+      - run: cargo test --locked
+      - run: cargo test --locked --no-default-features --features mesh
+      - run: cargo doc --locked --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    name: MSRV (Rust 1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/terrio-hecras
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check --locked --all-targets --all-features

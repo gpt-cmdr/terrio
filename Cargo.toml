@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "python", "js"]
+# The HEC-RAS layers crate depends on the HEC-RAS engine by Git revision, which crates.io does not
+# accept: it has its own lock file and CI job (`.github/workflows/hecras.yml`), so that terrio's
+# releases, licence notices and WebAssembly builds do not change.
+exclude = ["crates/terrio-hecras"]
 
 [workspace.package]
 version = "0.5.0"
