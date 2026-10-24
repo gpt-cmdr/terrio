@@ -5,12 +5,13 @@
 //! ras-commander uses) and translates what the engine returns into terrio's [`Layer`],
 //! [`terrio::FieldDef`] and [`terrio::Error`] types. It holds no HEC-RAS rule of its own:
 //!
-//! - **Geometry** is the engine's packed cell polygons, in the engine's ring order (clockwise from
-//!   the first listed face). The closing vertex is dropped because terrio rings store none.
-//!   Cells the engine omits (ghost cells, cells with fewer than three faces) are reported in
-//!   [`MeshCellLayer::omitted`], never invented.
-//! - **Identities** are the engine's: `mesh_name` (the exact 2D flow area name) and `cell_id` (the
-//!   stored cell index). A cell is identified by both; `cell_id` repeats across meshes.
+//! - **Geometry** is the engine's: packed cell polygons in its ring order (clockwise from the
+//!   first listed face), face polylines, stored perimeters and family parts. Closing vertices are
+//!   dropped because terrio rings store none. Cells the engine omits (ghost cells, cells with
+//!   fewer than three faces) are reported in [`MeshLayer::omitted`], never invented.
+//! - **Identities** are the engine's: `mesh_name` (the exact 2D flow area name) with `cell_id` or
+//!   `face_id` (stored indices that repeat across meshes), and `source_row` (the stored
+//!   attribute-table row) with the stored attribute columns for the other families.
 //! - **CRS** is the stored `Projection` text, attached as WKT. No EPSG code is guessed. A file
 //!   without one gives layers without a CRS; conflicting, malformed, unsupported or corrupt
 //!   projection evidence is an error ([`HecRasHdf::crs`]).
@@ -22,11 +23,13 @@
 //! ```no_run
 //! # #[cfg(feature = "results")]
 //! # fn main() -> Result<(), terrio::Error> {
-//! use terrio_hecras::{HecRasHdf, MeshCellOptions};
+//! use terrio_hecras::{HecRasHdf, MeshOptions};
 //!
 //! let hdf = HecRasHdf::open("Muncie.p04.hdf")?;
-//! let cells = hdf.mesh_cells(&MeshCellOptions::default().with_summary("Maximum Water Surface"))?;
+//! println!("layers: {:?}", hdf.layer_names()?);
+//! let cells = hdf.mesh_cells(&MeshOptions::default().with_summary("Maximum Water Surface"))?;
 //! println!("{}: {} cells, CRS {:?}", cells.layer.name, cells.layer.len(), cells.layer.crs);
+//! let sections = hdf.read_layer("cross_sections")?;
 //! # Ok(())
 //! # }
 //! # #[cfg(not(feature = "results"))]
@@ -36,11 +39,12 @@
 #![warn(missing_docs)]
 
 pub mod error;
+mod families;
 #[cfg(feature = "mesh")]
 mod mesh;
 
 #[cfg(feature = "mesh")]
-pub use mesh::{MeshCellLayer, MeshCellOptions, OmittedCell, SummaryField};
+pub use mesh::{MeshCellLayer, MeshCellOptions, MeshLayer, MeshOptions, OmittedCell, SummaryField};
 #[cfg(feature = "mesh")]
 pub use ras_commander_rust::mesh::{GeometryPolicy, OmissionKind};
 pub use terrio::Layer;
@@ -58,8 +62,44 @@ pub fn engine_api_version() -> u32 {
     ras_commander_rust::api::API_VERSION
 }
 
-/// The name of the 2D mesh cell polygon layer.
+/// The 2D mesh cell polygon layer ([`HecRasHdf::mesh_cells`]).
 pub const MESH_CELLS: &str = "mesh_cells";
+/// The 2D mesh cell centre point layer ([`HecRasHdf::mesh_cell_points`]).
+pub const MESH_CELL_POINTS: &str = "mesh_cell_points";
+/// The 2D mesh face line layer ([`HecRasHdf::mesh_faces`]).
+pub const MESH_FACES: &str = "mesh_faces";
+/// The 2D flow area perimeter polygon layer ([`HecRasHdf::mesh_perimeters`]).
+pub const MESH_PERIMETERS: &str = "mesh_perimeters";
+/// The mesh layers, in listing order.
+pub const MESH_LAYERS: &[&str] = &[MESH_CELLS, MESH_CELL_POINTS, MESH_FACES, MESH_PERIMETERS];
+
+/// The names of the geometry family layers ([`HecRasHdf::read_layer`]): `cross_sections`,
+/// `river_centerlines`, `river_bank_lines`, `river_edge_lines`, `river_flow_paths`,
+/// `storage_areas`, `structures`, `bc_lines`, `breaklines`, `refinement_regions`,
+/// `reference_lines` and `reference_points`.
+pub fn family_layer_names() -> impl Iterator<Item = &'static str> {
+    families::FAMILY_LAYERS.iter().map(|(name, _)| *name)
+}
+
+/// A non-nullable identity field.
+pub(crate) fn id_field(name: &str, kind: terrio::FieldType) -> terrio::FieldDef {
+    let mut f = terrio::FieldDef::new(name, kind);
+    f.nullable = false;
+    f
+}
+
+/// A field name for a stored name: lower case, runs of other characters as `_`.
+pub(crate) fn field_name(stored: &str) -> String {
+    let mut out = String::new();
+    for c in stored.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    out.trim_matches('_').to_string()
+}
 
 /// A HEC-RAS geometry or plan HDF file, opened read-only.
 ///
@@ -92,11 +132,38 @@ impl HecRasHdf {
     /// The names of the layers this file can give. Listing does not validate them: reading a
     /// layer can still refuse.
     pub fn layer_names(&self) -> terrio::Result<Vec<String>> {
+        let mut names = Vec::new();
         #[cfg(feature = "mesh")]
         if self.has_meshes()? {
-            return Ok(vec![MESH_CELLS.to_string()]);
+            names.extend(MESH_LAYERS.iter().map(|n| n.to_string()));
         }
-        Ok(Vec::new())
+        for (name, family) in families::FAMILY_LAYERS {
+            if self.family_present(*family)? {
+                names.push(name.to_string());
+            }
+        }
+        Ok(names)
+    }
+
+    /// Reads a layer by name, with default options for mesh layers (every mesh, strict
+    /// geometry, no joined summaries). A name this crate does not know, or a layer the file does
+    /// not store, is [`terrio::Error::InvalidArgument`].
+    pub fn read_layer(&self, name: &str) -> terrio::Result<Layer> {
+        #[cfg(feature = "mesh")]
+        {
+            let options = MeshOptions::default();
+            match name {
+                MESH_CELLS => return Ok(self.mesh_cells(&options)?.layer),
+                MESH_CELL_POINTS => return Ok(self.mesh_cell_points(&options)?.layer),
+                MESH_FACES => return Ok(self.mesh_faces(&options)?.layer),
+                MESH_PERIMETERS => return Ok(self.mesh_perimeters(&options)?.layer),
+                _ => {}
+            }
+        }
+        match families::FAMILY_LAYERS.iter().find(|(n, _)| *n == name) {
+            Some((name, family)) => self.family_layer(name, *family),
+            None => Err(terrio::Error::InvalidArgument(format!("no HEC-RAS layer named {name:?}"))),
+        }
     }
 
     /// The exact 2D flow area names, in the engine's order. A file without a `2D Flow Areas` group

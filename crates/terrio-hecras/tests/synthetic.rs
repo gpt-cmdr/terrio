@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 use terrio::{FieldValue, Geometry};
-use terrio_hecras::{GeometryPolicy, HecRasHdf, MESH_CELLS, MeshCellOptions, OmissionKind};
+use terrio_hecras::{GeometryPolicy, HecRasHdf, MESH_LAYERS, MeshCellOptions, MeshOptions, OmissionKind};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
@@ -22,7 +22,7 @@ fn engine_contract_is_api_10_or_later() {
 #[test]
 fn good_mesh_becomes_polygons_with_identities_and_omissions() {
     let hdf = open("coverage_mesh.h5");
-    assert_eq!(hdf.layer_names().unwrap(), vec![MESH_CELLS.to_string()]);
+    assert_eq!(hdf.layer_names().unwrap(), MESH_LAYERS.iter().map(|s| s.to_string()).collect::<Vec<_>>());
     let cells = hdf.mesh_cells(&MeshCellOptions::default().with_meshes(["Good"])).unwrap();
     let layer = &cells.layer;
     assert_eq!(layer.name, "mesh_cells");
@@ -145,4 +145,57 @@ fn the_layer_round_trips_through_terrio_drivers() {
     let names: Vec<_> = layer.schema.fields().iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["mesh_name", "cell_id"]);
     assert_eq!(layer.features[1].attributes, vec![FieldValue::Text("Good".into()), FieldValue::Integer(1)]);
+}
+
+#[test]
+fn faces_are_the_engine_polylines_with_mesh_and_face_ids() {
+    let hdf = open("coverage_mesh.h5");
+    let faces = hdf.mesh_faces(&MeshOptions::default().with_meshes(["Good"])).unwrap();
+    let layer = &faces.layer;
+    assert_eq!(layer.name, "mesh_faces");
+    let fields: Vec<_> = layer.schema.fields().iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(fields, ["mesh_name", "face_id"]);
+    assert!(!layer.is_empty());
+    for (i, f) in layer.features.iter().enumerate() {
+        assert_eq!(f.attributes, vec![FieldValue::Text("Good".into()), FieldValue::Integer(i as i64)]);
+        let Some(Geometry::LineString(line)) = &f.geometry else { panic!("not a line") };
+        assert!(line.len() >= 2);
+    }
+    // Cell polygons and face lines of one mesh share their vertices.
+    let cells = hdf.mesh_cells(&MeshOptions::default().with_meshes(["Good"])).unwrap();
+    let Some(Geometry::Polygon { exterior, .. }) = &cells.layer.features[0].geometry else { panic!() };
+    let vertex = (exterior.coords()[0].x, exterior.coords()[0].y);
+    assert!(layer.features.iter().any(|f| matches!(&f.geometry, Some(Geometry::LineString(l)) if l.iter().any(|c| (c.x, c.y) == vertex))));
+}
+
+#[test]
+fn absent_perimeters_and_unprovable_ghost_flags_are_errors() {
+    let hdf = open("coverage_mesh.h5");
+    // The synthetic meshes store no Perimeter dataset.
+    let e = hdf.mesh_perimeters(&MeshOptions::default().with_meshes(["Good"])).unwrap_err();
+    assert!(matches!(&e, terrio::Error::InvalidArgument(m) if m.starts_with("HEC-RAS not_found")), "{e}");
+    // Ghost flags need the physical cell count of a 2D Flow Areas Attributes table.
+    let e = hdf.mesh_cell_points(&MeshOptions::default().with_meshes(["Good"])).unwrap_err();
+    assert!(!matches!(e, terrio::Error::Io(_)), "{e}");
+}
+
+#[test]
+fn family_layers_absent_from_a_file_are_errors_and_not_listed() {
+    let hdf = open("coverage_mesh.h5");
+    let names = hdf.layer_names().unwrap();
+    for family in terrio_hecras::family_layer_names() {
+        assert!(!names.iter().any(|n| n == family), "{family}");
+        let e = hdf.read_layer(family).unwrap_err();
+        assert!(matches!(&e, terrio::Error::InvalidArgument(m) if m.starts_with("HEC-RAS unavailable")), "{family}: {e}");
+    }
+    assert!(matches!(hdf.read_layer("no_such_layer"), Err(terrio::Error::InvalidArgument(_))));
+    assert_eq!(hdf.read_layer("mesh_faces").map(|l| l.name).ok(), None, "every mesh is read, and the fixture has broken ones");
+}
+
+#[cfg(feature = "results")]
+#[test]
+fn summaries_are_refused_on_perimeters() {
+    let hdf = open("coverage_mesh.h5");
+    let e = hdf.mesh_perimeters(&MeshOptions::default().with_meshes(["Good"]).with_summary("Maximum Water Surface")).unwrap_err();
+    assert!(matches!(e, terrio::Error::InvalidArgument(_)));
 }

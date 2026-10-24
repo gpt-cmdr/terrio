@@ -1,23 +1,26 @@
-//! The 2D mesh cell polygon layer, with optional stored summary results joined by cell.
+//! 2D mesh layers: cell polygons, cell centre points, face lines and area perimeters, with
+//! optional stored summary results joined by cell or face.
 
-use crate::{HecRasHdf, MESH_CELLS, error};
-use ras_commander_rust::hdf::{DEFAULT_MAX_BYTES, DEFAULT_READ_MAX_BYTES};
-use ras_commander_rust::mesh::{GeometryPolicy, OmissionKind, PackedMesh};
+use crate::{HecRasHdf, MESH_CELL_POINTS, MESH_CELLS, MESH_FACES, MESH_PERIMETERS, error, id_field};
+use ras_commander_rust::hdf::mesh_geometry::MeshGeometryField;
+use ras_commander_rust::hdf::{DEFAULT_MAX_BYTES, DEFAULT_READ_MAX_BYTES, NumericValues};
+use ras_commander_rust::mesh::{GeometryPolicy, OmissionKind};
 use terrio::vector::{Coord, Ring};
 use terrio::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
-/// What to read into the mesh cell layer.
+/// What to read into a mesh layer.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct MeshCellOptions {
+pub struct MeshOptions {
     /// Only these 2D flow areas (exact names), in this order. `None` reads every mesh.
     pub meshes: Option<Vec<String>>,
-    /// The engine's geometry policy. [`GeometryPolicy::Strict`] (the default) fails on an invalid
-    /// cell polygon; [`GeometryPolicy::QuarantineInvalid`] leaves it out and reports it in
-    /// [`MeshCellLayer::omitted`]. Structural corruption fails under both.
+    /// The engine's geometry policy for cell polygons. [`GeometryPolicy::Strict`] (the default)
+    /// fails on an invalid cell polygon; [`GeometryPolicy::QuarantineInvalid`] leaves it out and
+    /// reports it in [`MeshLayer::omitted`]. Structural corruption fails under both.
     pub policy: GeometryPolicy,
-    /// Stored `Summary Output` variables (exact dataset names, such as `Maximum Water Surface`)
-    /// to join to each cell. Needs a plan HDF with results and the `results` feature.
+    /// Stored `Summary Output` variables (exact dataset names, such as `Maximum Water Surface`
+    /// or `Maximum Face Velocity`) to join: cell variables to cell layers, face variables to
+    /// the face layer. Needs a plan HDF with results and the `results` feature.
     pub summaries: Vec<String>,
     /// Byte limit for each metadata object the engine consults.
     pub metadata_max_bytes: usize,
@@ -25,7 +28,10 @@ pub struct MeshCellOptions {
     pub max_bytes: usize,
 }
 
-impl Default for MeshCellOptions {
+/// The former name of [`MeshOptions`].
+pub type MeshCellOptions = MeshOptions;
+
+impl Default for MeshOptions {
     fn default() -> Self {
         Self {
             meshes: None,
@@ -37,14 +43,14 @@ impl Default for MeshCellOptions {
     }
 }
 
-impl MeshCellOptions {
+impl MeshOptions {
     /// Reads only these meshes.
     pub fn with_meshes<S: Into<String>>(mut self, meshes: impl IntoIterator<Item = S>) -> Self {
         self.meshes = Some(meshes.into_iter().map(Into::into).collect());
         self
     }
 
-    /// Joins a stored summary variable to the cells.
+    /// Joins a stored summary variable.
     pub fn with_summary(mut self, variable: impl Into<String>) -> Self {
         self.summaries.push(variable.into());
         self
@@ -72,7 +78,7 @@ pub struct OmittedCell {
     pub reason: String,
 }
 
-/// A summary variable joined to the cells.
+/// A summary variable joined to a layer.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SummaryField {
@@ -90,24 +96,30 @@ pub struct SummaryField {
     pub datasets: Vec<String>,
 }
 
-/// The mesh cell polygon layer and what the engine reported while building it.
+/// A mesh layer and what the engine reported while building it.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct MeshCellLayer {
-    /// The `mesh_cells` layer: one polygon per cell, with `mesh_name`, `cell_id` and the summary
-    /// fields, in the stored CRS.
+pub struct MeshLayer {
+    /// The layer, in the stored CRS.
     pub layer: Layer,
-    /// Cells left out, by mesh.
+    /// Cells left out of a cell polygon layer, by mesh (empty for other layers).
     pub omitted: Vec<OmittedCell>,
     /// The joined summary variables.
     pub summaries: Vec<SummaryField>,
 }
 
+/// The former name of [`MeshLayer`].
+pub type MeshCellLayer = MeshLayer;
+
+/// The element a mesh layer has one feature per.
+#[derive(Clone, Copy, PartialEq)]
+enum Element {
+    Cell,
+    Face,
+}
+
 impl HecRasHdf {
-    /// Reads the 2D mesh cell polygons as the [`MESH_CELLS`] layer.
-    ///
-    /// Every requested mesh must read completely: one corrupt or unsupported mesh fails the call.
-    pub fn mesh_cells(&self, options: &MeshCellOptions) -> terrio::Result<MeshCellLayer> {
+    fn mesh_list(&self, options: &MeshOptions) -> terrio::Result<Vec<String>> {
         let meshes = match &options.meshes {
             Some(m) => m.clone(),
             None => self.mesh_names()?,
@@ -119,36 +131,47 @@ impl HecRasHdf {
         if !options.summaries.is_empty() {
             return Err(terrio::Error::Unsupported("summary results need terrio-hecras's `results` feature".into()));
         }
+        Ok(meshes)
+    }
 
-        let mut layer = Layer::new(MESH_CELLS).with_geom_type(GeometryType::Polygon);
+    fn new_layer(&self, name: &str, geom: GeometryType, id: Option<&str>) -> terrio::Result<Layer> {
+        let mut layer = Layer::new(name).with_geom_type(geom);
         if let Some(wkt) = self.crs()? {
             layer = layer.with_crs_wkt(wkt);
         }
-        let mut id = FieldDef::new("mesh_name", FieldType::Text);
-        id.nullable = false;
-        layer.add_field(id);
-        let mut id = FieldDef::new("cell_id", FieldType::Integer);
-        id.nullable = false;
-        layer.add_field(id);
+        layer.add_field(id_field("mesh_name", FieldType::Text));
+        if let Some(id) = id {
+            layer.add_field(id_field(id, FieldType::Integer));
+        }
+        Ok(layer)
+    }
 
+    /// Builds a per-element layer: `rows(mesh)` gives each feature's element ID, geometry and extra
+    /// attributes, and the summaries of `element` are joined by element ID.
+    fn element_layer(
+        &self,
+        name: &str,
+        geom: GeometryType,
+        element: Element,
+        extra: &[(&str, FieldType)],
+        options: &MeshOptions,
+        mut rows: impl FnMut(&str, &mut Vec<OmittedCell>) -> terrio::Result<Vec<(i64, Geometry, Vec<FieldValue>)>>,
+    ) -> terrio::Result<MeshLayer> {
+        let meshes = self.mesh_list(options)?;
+        let mut layer = self.new_layer(name, geom, Some(if element == Element::Cell { "cell_id" } else { "face_id" }))?;
+        for (field, kind) in extra {
+            layer.add_field(FieldDef::new(*field, *kind));
+        }
         #[cfg_attr(not(feature = "results"), allow(unused_mut))]
         let mut summaries: Vec<SummaryField> = Vec::new();
         let mut omitted = Vec::new();
         for mesh in &meshes {
-            let named = self.session.read_topology_bounded(mesh, options.max_bytes).map_err(error::from_engine)?;
-            let packed = named.topology.assemble_with_session(options.policy, &self.session).map_err(error::from_engine)?;
-            omitted.extend(packed.diagnostics.iter().map(|d| OmittedCell {
-                mesh_name: mesh.clone(),
-                cell_id: d.cell_id,
-                kind: d.kind,
-                reason: d.reason.clone(),
-            }));
-
+            let features = rows(mesh, &mut omitted)?;
             #[cfg(feature = "results")]
             let columns = {
                 let mut columns = Vec::new();
                 for (i, variable) in options.summaries.iter().enumerate() {
-                    let column = results::read_summary(self, mesh, variable, options)?;
+                    let column = results::read_summary(self, mesh, variable, element, options)?;
                     if summaries.len() == i {
                         summaries.push(results::declare(&mut layer, variable, &column)?);
                     }
@@ -157,60 +180,159 @@ impl HecRasHdf {
                 }
                 columns
             };
-
-            for (row, &cell_id) in packed.cell_ids.iter().enumerate() {
+            for (id, geometry, extra_values) in features {
                 let mut feature = Feature::new();
                 feature.fid = layer.features.len() as u64;
-                feature.geometry = Some(polygon(&packed, row, mesh, cell_id)?);
-                feature.attributes = vec![FieldValue::Text(mesh.clone()), FieldValue::Integer(cell_id)];
+                feature.geometry = Some(geometry);
+                feature.attributes = vec![FieldValue::Text(mesh.clone()), FieldValue::Integer(id)];
+                feature.attributes.extend(extra_values);
                 #[cfg(feature = "results")]
                 for column in &columns {
-                    column.push_values(cell_id, mesh, &mut feature.attributes)?;
+                    column.push_values(id, mesh, &mut feature.attributes)?;
                 }
                 layer.push(feature);
             }
         }
-        Ok(MeshCellLayer { layer, omitted, summaries })
+        Ok(MeshLayer { layer, omitted, summaries })
+    }
+
+    /// Reads the 2D mesh cell polygons as the [`MESH_CELLS`] layer: `mesh_name`, `cell_id`, then
+    /// joined cell summaries.
+    ///
+    /// Every requested mesh must read completely: one corrupt or unsupported mesh fails the call.
+    pub fn mesh_cells(&self, options: &MeshOptions) -> terrio::Result<MeshLayer> {
+        self.element_layer(MESH_CELLS, GeometryType::Polygon, Element::Cell, &[], options, |mesh, omitted| {
+            let named = self.session.read_topology_bounded(mesh, options.max_bytes).map_err(error::from_engine)?;
+            let packed = named.topology.assemble_with_session(options.policy, &self.session).map_err(error::from_engine)?;
+            omitted.extend(packed.diagnostics.iter().map(|d| OmittedCell {
+                mesh_name: mesh.to_string(),
+                cell_id: d.cell_id,
+                kind: d.kind,
+                reason: d.reason.clone(),
+            }));
+            let mut out = Vec::with_capacity(packed.cell_ids.len());
+            for (row, &cell_id) in packed.cell_ids.iter().enumerate() {
+                let ring = slice(&packed.coordinates, &packed.offsets, row, mesh, "cell", cell_id)?;
+                out.push((cell_id, polygon(ring, mesh, "cell", cell_id)?, Vec::new()));
+            }
+            Ok(out)
+        })
+    }
+
+    /// Reads every stored cell centre as the [`MESH_CELL_POINTS`] layer: `mesh_name`, `cell_id`,
+    /// `is_ghost`, then joined cell summaries.
+    ///
+    /// Ghost cells are the stored rows at and above the physical cell count the engine reads
+    /// from `Geometry/2D Flow Areas/Attributes`; files without that table (HEC-RAS 5.0) are
+    /// refused rather than guessed.
+    pub fn mesh_cell_points(&self, options: &MeshOptions) -> terrio::Result<MeshLayer> {
+        let extra = [("is_ghost", FieldType::Boolean)];
+        self.element_layer(MESH_CELL_POINTS, GeometryType::Point, Element::Cell, &extra, options, |mesh, _| {
+            let geometry = self.session.mesh_geometry(mesh, options.metadata_max_bytes).map_err(error::from_engine)?;
+            let physical = geometry.mesh.physical_cells;
+            let array = self
+                .session
+                .read_mesh_geometry_cached(&geometry, MeshGeometryField::CellCenters, None, options.max_bytes)
+                .map_err(error::from_engine)?;
+            let xy = xy_rows(array.shape.as_slice(), array.values, mesh, "Cells Center Coordinate")?;
+            Ok(xy
+                .into_iter()
+                .enumerate()
+                .map(|(i, [x, y])| (i as i64, Geometry::Point(Coord::xy(x, y)), vec![FieldValue::Boolean(i as u64 >= physical)]))
+                .collect())
+        })
+    }
+
+    /// Reads every stored face as the [`MESH_FACES`] layer: `mesh_name`, `face_id`, then joined
+    /// face summaries. Lines are the engine's face polylines (start point, stored perimeter
+    /// vertices, end point), as ras-commander's `get_mesh_cell_faces` builds them.
+    pub fn mesh_faces(&self, options: &MeshOptions) -> terrio::Result<MeshLayer> {
+        self.element_layer(MESH_FACES, GeometryType::LineString, Element::Face, &[], options, |mesh, _| {
+            let named = self.session.read_topology_bounded(mesh, options.max_bytes).map_err(error::from_engine)?;
+            let lines = named.topology.face_lines().map_err(error::from_engine)?;
+            let mut out = Vec::with_capacity(lines.face_ids.len());
+            for (row, &face_id) in lines.face_ids.iter().enumerate() {
+                let line = slice(&lines.coordinates, &lines.offsets, row, mesh, "face", face_id)?;
+                out.push((face_id, Geometry::LineString(line.iter().map(|p| Coord::xy(p[0], p[1])).collect()), Vec::new()));
+            }
+            Ok(out)
+        })
+    }
+
+    /// Reads each 2D flow area's stored perimeter as the [`MESH_PERIMETERS`] layer: one polygon
+    /// per mesh with `mesh_name`. An area without a stored `Perimeter` dataset is an error.
+    pub fn mesh_perimeters(&self, options: &MeshOptions) -> terrio::Result<MeshLayer> {
+        let meshes = self.mesh_list(options)?;
+        if !options.summaries.is_empty() {
+            return Err(terrio::Error::InvalidArgument("summaries join to cell and face layers, not perimeters".into()));
+        }
+        let mut layer = self.new_layer(MESH_PERIMETERS, GeometryType::Polygon, None)?;
+        for mesh in &meshes {
+            let p = self.session.read_mesh_perimeter(mesh, options.max_bytes).map_err(error::from_engine)?;
+            let mut feature = Feature::new();
+            feature.fid = layer.features.len() as u64;
+            feature.geometry = Some(polygon(&p.ring, mesh, "perimeter", 0)?);
+            feature.attributes = vec![FieldValue::Text(mesh.clone())];
+            layer.push(feature);
+        }
+        Ok(MeshLayer { layer, omitted: Vec::new(), summaries: Vec::new() })
     }
 }
 
-/// The polygon of packed row `row`. The engine's rings are closed (last vertex = first); terrio
-/// rings are stored without the closing vertex.
-fn polygon(packed: &PackedMesh, row: usize, mesh: &str, cell_id: i64) -> terrio::Result<Geometry> {
-    let bad = |what: &str| terrio::Error::InvalidData(format!("HEC-RAS engine ring for {mesh} cell {cell_id}: {what}"));
-    let (start, end) = match (packed.offsets.get(row), packed.offsets.get(row + 1)) {
+/// Rows of an `(n, 2)` float array (f32 widened exactly).
+fn xy_rows(shape: &[u64], values: NumericValues, mesh: &str, what: &str) -> terrio::Result<Vec<[f64; 2]>> {
+    if shape.len() != 2 || shape[1] != 2 {
+        return Err(terrio::Error::InvalidData(format!("{mesh} {what}: shape {shape:?}, not (rows, 2)")));
+    }
+    let v: Vec<f64> = match values {
+        NumericValues::F64(v) => v,
+        NumericValues::F32(v) => v.into_iter().map(f64::from).collect(),
+        _ => return Err(terrio::Error::Unsupported(format!("{mesh} {what}: coordinates are not floats"))),
+    };
+    Ok(v.as_chunks::<2>().0.to_vec())
+}
+
+/// Packed row `row` of `coordinates`/`offsets`.
+fn slice<'a>(coordinates: &'a [[f64; 2]], offsets: &[u64], row: usize, mesh: &str, what: &str, id: i64) -> terrio::Result<&'a [[f64; 2]]> {
+    let bad = |m: &str| terrio::Error::InvalidData(format!("HEC-RAS engine {what} {id} of {mesh}: {m}"));
+    let (start, end) = match (offsets.get(row), offsets.get(row + 1)) {
         (Some(&s), Some(&e)) => (usize::try_from(s).map_err(|_| bad("offset"))?, usize::try_from(e).map_err(|_| bad("offset"))?),
         _ => return Err(bad("missing offset")),
     };
-    let ring = packed.coordinates.get(start..end).ok_or_else(|| bad("offset out of range"))?;
+    coordinates.get(start..end).ok_or_else(|| bad("offset out of range"))
+}
+
+/// A closed engine ring (last vertex = first) as a terrio polygon, whose rings store no closing
+/// vertex.
+fn polygon(ring: &[[f64; 2]], mesh: &str, what: &str, id: i64) -> terrio::Result<Geometry> {
     match ring {
         [first, .., last] if ring.len() >= 4 && first == last => {
             let coords = ring[..ring.len() - 1].iter().map(|p| Coord::xy(p[0], p[1])).collect();
             Ok(Geometry::Polygon { exterior: Ring::new(coords), interiors: Vec::new() })
         }
-        _ => Err(bad("not a closed ring of at least three vertices")),
+        _ => Err(terrio::Error::InvalidData(format!("HEC-RAS engine {what} {id} of {mesh}: not a closed ring of at least three vertices"))),
     }
 }
 
 #[cfg(feature = "results")]
 mod results {
     use super::*;
-    use ras_commander_rust::hdf::NumericValues;
+    use crate::field_name;
     use ras_commander_rust::hdf::mesh_results::ElementDomain;
 
-    /// One summary variable of one mesh, by stored cell index.
+    /// One summary variable of one mesh, by stored element index.
     pub(super) struct SummaryColumn {
         pub dataset: String,
         pub units: Option<String>,
-        pub cells: usize,
+        pub elements: usize,
         pub value: Vec<f64>,
         pub time: Option<Vec<f64>>,
     }
 
     impl SummaryColumn {
-        pub fn push_values(&self, cell_id: i64, mesh: &str, out: &mut Vec<FieldValue>) -> terrio::Result<()> {
-            let i = usize::try_from(cell_id).ok().filter(|&i| i < self.cells).ok_or_else(|| {
-                terrio::Error::InvalidData(format!("{mesh} cell {cell_id} is outside {} ({} cells)", self.dataset, self.cells))
+        pub fn push_values(&self, id: i64, mesh: &str, out: &mut Vec<FieldValue>) -> terrio::Result<()> {
+            let i = usize::try_from(id).ok().filter(|&i| i < self.elements).ok_or_else(|| {
+                terrio::Error::InvalidData(format!("{mesh} element {id} is outside {} ({} elements)", self.dataset, self.elements))
             })?;
             out.push(FieldValue::Float(self.value[i]));
             if let Some(time) = &self.time {
@@ -220,7 +342,13 @@ mod results {
         }
     }
 
-    pub(super) fn read_summary(hdf: &HecRasHdf, mesh: &str, variable: &str, options: &MeshCellOptions) -> terrio::Result<SummaryColumn> {
+    pub(super) fn read_summary(
+        hdf: &HecRasHdf,
+        mesh: &str,
+        variable: &str,
+        element: Element,
+        options: &MeshOptions,
+    ) -> terrio::Result<SummaryColumn> {
         let s = &hdf.session;
         let inventory = s.mesh_summary_inventory(mesh, options.metadata_max_bytes).map_err(error::from_engine)?;
         error::require(&inventory.capability, &format!("{mesh} Summary Output"))?;
@@ -230,17 +358,25 @@ mod results {
             .find(|v| v.name == variable)
             .ok_or_else(|| terrio::Error::InvalidArgument(format!("HEC-RAS not_found: {mesh} Summary Output has no {variable:?}")))?;
         error::require(&v.capability, &format!("{mesh} {variable}"))?;
-        if v.domain != ElementDomain::Cell {
-            return Err(terrio::Error::Unsupported(format!("{mesh} {variable}: domain {}, not cells", v.domain.as_str())));
+        let (want, label) = match element {
+            Element::Cell => (ElementDomain::Cell, "cells"),
+            Element::Face => (ElementDomain::Face, "faces"),
+        };
+        if v.domain != want {
+            return Err(terrio::Error::InvalidArgument(format!(
+                "{mesh} {variable}: stored on {}, not {label}; join it to the matching layer",
+                v.domain.as_str()
+            )));
         }
         let array =
             s.read_mesh_summary_values(mesh, variable, None, options.metadata_max_bytes, options.max_bytes).map_err(error::from_engine)?;
-        let (rows, cells) = match array.shape.as_slice() {
+        let (rows, elements) = match array.shape.as_slice() {
             [n] => (1, *n),
             [r, n] => (*r, *n),
             _ => return Err(terrio::Error::Unsupported(format!("{mesh} {variable}: shape {:?}", array.shape))),
         };
-        let cells = usize::try_from(cells).map_err(|_| terrio::Error::Unsupported(format!("{mesh} {variable}: too many cells")))?;
+        let elements =
+            usize::try_from(elements).map_err(|_| terrio::Error::Unsupported(format!("{mesh} {variable}: too many elements")))?;
         // f32 widens to f64 exactly. Integer counters are left for a later, explicit mapping.
         let values: Vec<f64> = match array.values {
             NumericValues::F32(v) => v.into_iter().map(f64::from).collect(),
@@ -250,7 +386,7 @@ mod results {
         let (value, time) = match (rows, v.time_of_extreme_row) {
             (1, _) => (values, None),
             (2, Some(1)) => {
-                let (a, b) = values.split_at(cells);
+                let (a, b) = values.split_at(elements);
                 (a.to_vec(), Some(b.to_vec()))
             }
             _ => {
@@ -260,7 +396,7 @@ mod results {
             }
         };
         let units = s.dataset_units(&v.path).map_err(error::from_engine)?.units.value().cloned();
-        Ok(SummaryColumn { dataset: v.path.clone(), units, cells, value, time })
+        Ok(SummaryColumn { dataset: v.path.clone(), units, elements, value, time })
     }
 
     /// Adds the fields of the first mesh's column to the layer.
@@ -289,27 +425,5 @@ mod results {
         }
         field.datasets.push(column.dataset.clone());
         Ok(())
-    }
-
-    /// A field name for a stored variable name: lower case, runs of other characters as `_`.
-    pub(super) fn field_name(variable: &str) -> String {
-        let mut out = String::new();
-        for c in variable.chars() {
-            if c.is_ascii_alphanumeric() {
-                out.push(c.to_ascii_lowercase());
-            } else if !out.ends_with('_') {
-                out.push('_');
-            }
-        }
-        out.trim_matches('_').to_string()
-    }
-
-    #[cfg(test)]
-    mod tests {
-        #[test]
-        fn field_names() {
-            assert_eq!(super::field_name("Maximum Water Surface"), "maximum_water_surface");
-            assert_eq!(super::field_name("Maximum Face Velocity (ft/s)"), "maximum_face_velocity_ft_s");
-        }
     }
 }
