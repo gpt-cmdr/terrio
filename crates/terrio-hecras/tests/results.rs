@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 use terrio::{FieldValue, Layer};
-use terrio_hecras::{CrossSectionOptions, Extreme, HecRasHdf, MeshAttribute, MeshOptions};
+use terrio_hecras::{CrossSectionOptions, Extreme, FeatureSeriesOptions, HecRasHdf, MeshAttribute, MeshOptions};
 
 fn open() -> HecRasHdf {
     HecRasHdf::open_with_threads(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/results_mesh_xs.h5"), 1).unwrap()
@@ -179,4 +179,19 @@ fn river_junctions_are_points_with_their_stored_columns() {
     );
     assert_eq!(j.features[0].geometry, Some(terrio::Geometry::Point(terrio::vector::Coord::xy(4.0, 1.5))));
     assert!(matches!(hdf.read_layer("pump_stations").unwrap_err(), terrio::Error::InvalidArgument(_)));
+}
+
+#[test]
+fn bc_line_values_join_by_name_and_area() {
+    let hdf = open();
+    let x = hdf.bc_lines_at(&FeatureSeriesOptions::at_row(1)).unwrap();
+    assert_eq!(x.fields[0].fields, ["stage", "flow"]);
+    assert_eq!(x.fields[0].units, [Some("ft".into()), Some("cfs".into())]);
+    assert_eq!(column(&x.layer, "name"), ["Inflow", "Outflow"].map(|s| FieldValue::Text(s.into())));
+    assert_eq!(column(&x.layer, "stage"), floats(&[12.5, 11.5]));
+    assert_eq!(column(&x.layer, "flow"), floats(&[7.5, 7.5]));
+    assert_eq!(x.row_label.as_deref(), Some("01JAN2000 12:00:00"));
+    assert!(hdf.bc_lines_at(&FeatureSeriesOptions::at_row(3)).is_err());
+    // No structures stored: an error, not an empty join.
+    assert!(hdf.structures_at(&FeatureSeriesOptions::at_row(0).with_variable("Structure Variables")).is_err());
 }

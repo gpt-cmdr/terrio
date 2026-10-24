@@ -79,6 +79,14 @@ value a mesh or file does not store is an error, never an empty field.
 | `with_summary(v)` | `<v>` (row 0), `<v>_time` (a proven Time row), `<v>_<label>` (other labelled rows) | `Summary Output/Cross Sections/<v>` (`Maximum Water Surface`: `Max WSEL`, `Flow at Max WSEL`, `Time at Max WSEL`) |
 | `with_unsteady(v, row)` / `with_steady(v, profile)` | `<v>`; `CrossSectionLayer::row_label` gives the stored time stamp or profile name | `Unsteady Time Series/Cross Sections/<v>`, `Steady Profiles/Cross Sections/<v>` |
 
+| `HecRasHdf` method | Fields | Stored source |
+|---|---|---|
+| `structures_at(FeatureSeriesOptions::at_row(row).with_variable(v))` | `<v>_<column label>` (`structure_variables_total_flow`, ...); nulls on structures that store no `v` | `Unsteady Time Series/{SA 2D Area Conn, Lateral Structures, Inline Structures, Bridges, Culverts}/<structure>/<v>`, linked to `Geometry/Structures/Attributes` rows by the engine |
+| `bc_lines_at(FeatureSeriesOptions::at_row(row))` | one field per stored `Columns` label (`stage`, `flow`, ...); nulls on lines without a series | `Unsteady Time Series/2D Flow Areas/<area>/Boundary Conditions/<line name>`, linked by the engine through `Name` and `SA-2D` |
+
+Reference line and reference point results are not joined: the engine reads them, but does not
+yet link their columns to the geometry rows, and this crate does not infer that link.
+
 1D values are joined by the cross-section identity the engine validates (River, Reach and RS
 against `Geometry/Cross Sections/Attributes`), so a result column always lands on its own cut
 line. Units are reported per field (`CrossSectionField::units`) exactly as stored. Depth is not
@@ -140,7 +148,9 @@ ghost counts, and Maximum Water Surface and Maximum Face Velocity values and tim
 checks 1,370,298 joined mesh values (static cell and face arrays, Water Surface and Face Velocity
 at one output row with its time stamp, and the Water Surface maximum and its row) and 2,216
 cross-section values (Muncie's Maximum Water Surface, Maximum Flow and Maximum Channel Velocity
-rows, unsteady Water Surface and Flow at one row, and ConSpan's steady profiles), bit for bit.
+rows, unsteady Water Surface and Flow at one row, and ConSpan's steady profiles) and 64 structure
+and boundary-condition values (Muncie's lateral structures, Chippewa_2D's and DavisStormSystem's
+boundary lines, each linked by the oracle independently of the engine), bit for bit.
 
 `tests/results.rs` checks the same joins with exact values on the synthetic plan
 `tests/fixtures/results_mesh_xs.h5`, written by `scripts/make_results_fixture.py`.

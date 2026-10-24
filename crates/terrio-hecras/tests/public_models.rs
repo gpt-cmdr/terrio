@@ -9,7 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use terrio::{FieldValue, Geometry, Layer};
-use terrio_hecras::{CrossSectionOptions, Extreme, HecRasHdf, MeshAttribute, MeshLayer, MeshOptions};
+use terrio_hecras::{CrossSectionOptions, Extreme, FeatureSeriesOptions, HecRasHdf, MeshAttribute, MeshLayer, MeshOptions};
 
 /// Reads the pinned engine refuses on these files, with the refusal it gives. ras-commander has
 /// no h5py reading for them either (HEC-RAS 5.0 files without `2D Flow Areas/Attributes`).
@@ -134,7 +134,7 @@ fn public_models_match_the_h5py_oracle() {
     assert!(!files.is_empty(), "the oracle lists no files");
     let mut seen = Vec::new();
     let (mut cells_checked, mut faces_checked, mut families_checked) = (0usize, 0usize, 0usize);
-    let (mut joins_checked, mut xs_checked) = (0usize, 0usize);
+    let (mut joins_checked, mut xs_checked, mut series_checked) = (0usize, 0usize, 0usize);
     for (file, want) in files {
         let path = PathBuf::from(&root).join(file);
         assert_eq!(sha256_hex(&std::fs::read(&path).unwrap()), want["sha256"].as_str().unwrap(), "{file}: not the file the oracle read");
@@ -358,6 +358,48 @@ fn public_models_match_the_h5py_oracle() {
             }
         }
 
+        // Structure and boundary-condition line values at the oracle's output row.
+        for (layer, rows) in [("structures", &want["structures"]), ("bc_lines", &want["bc_lines"])] {
+            let rows = rows.as_object().unwrap();
+            if rows.is_empty() {
+                continue;
+            }
+            let options = FeatureSeriesOptions::at_row(want["time_step"]["row"].as_u64().unwrap());
+            let x = if layer == "structures" {
+                hdf.structures_at(&options.with_variable("Structure Variables"))
+            } else {
+                hdf.bc_lines_at(&options)
+            }
+            .unwrap_or_else(|e| panic!("{file} {layer}: {e}"));
+            assert_eq!(x.row_label.as_deref(), want["time_step"]["date_stamp"].as_str());
+            let field = &x.fields[0];
+            let index: Vec<usize> =
+                field.fields.iter().map(|n| x.layer.schema.fields().iter().position(|f| &f.name == n).unwrap()).collect();
+            let mut linked = 0;
+            for f in &x.layer.features {
+                let FieldValue::Integer(row) = f.attributes[0] else { panic!() };
+                let present: Vec<usize> = (0..index.len()).filter(|&k| f.attributes[index[k]] != FieldValue::Null).collect();
+                let Some(w) = rows.get(&row.to_string()) else {
+                    assert!(present.is_empty(), "{file} {layer} row {row}: values the oracle does not link");
+                    continue;
+                };
+                let labels: Vec<&str> = present.iter().map(|&k| field.labels[k].as_str()).collect();
+                let want_labels: Vec<&str> = w["labels"].as_array().unwrap().iter().map(|l| l.as_str().unwrap()).collect();
+                assert_eq!(labels, want_labels, "{file} {layer} row {row} labels");
+                let bytes: Vec<u8> = present
+                    .iter()
+                    .flat_map(|&k| match f.attributes[index[k]] {
+                        FieldValue::Float(v) => v.to_le_bytes(),
+                        ref other => panic!("{other:?}"),
+                    })
+                    .collect();
+                assert_eq!(sha256_hex(&bytes), w["values_sha256"].as_str().unwrap(), "{file} {layer} row {row} values");
+                linked += 1;
+                series_checked += present.len();
+            }
+            assert_eq!(linked, rows.len(), "{file} {layer}: every oracle row linked");
+        }
+
         // Family identities, for the families whose geometry the file stores.
         for (layer, fam) in want["families"].as_object().unwrap() {
             if !layers.iter().any(|l| l == layer) {
@@ -410,7 +452,7 @@ fn public_models_match_the_h5py_oracle() {
     }
     eprintln!(
         "checked {cells_checked} cells, {faces_checked} faces, {families_checked} family features, {joins_checked} joined mesh values, \
-         {xs_checked} cross-section values; {} known refusals",
+         {xs_checked} cross-section values, {series_checked} structure and boundary values; {} known refusals",
         seen.len()
     );
 }

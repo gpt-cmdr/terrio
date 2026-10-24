@@ -11,6 +11,7 @@ writes (as seen in HEC's public example plans), so the engine qualifies them as 
 - `Unsteady Time Series` `Time`, `Time Date Stamp`, cell `Water Surface` and face `Face Velocity`;
 - three cross sections (attributes and cut lines), their `Summary Output/Cross Sections/Maximum
   Water Surface` (value, flow and time rows) and unsteady `Water Surface`;
+- two boundary-condition lines on the mesh, each with its own (Stage, Flow) series;
 - one river junction (`Geometry/Junctions` attributes and point).
 
 Usage: python -I make_results_fixture.py <coverage_mesh.h5> <out.h5>
@@ -104,6 +105,22 @@ def main(source, out):
                  [b"Point Starting Index", b"Point Count", b"Part Starting Index", b"Part Count"], b"Feature").attrs["Feature Type"] = np.bytes_(b"Polyline")
         labelled(xs, "Polyline Parts", np.array([[0, 2], [0, 3], [0, 2]], dtype="<i4"), [b"Point Starting Index", b"Point Count"], b"Part")
         labelled(xs, "Polyline Points", points, [b"X", b"Y"], b"Points")
+        bc = f.create_group("Geometry/Boundary Condition Lines")
+        ba = np.zeros(2, dtype=[("Name", "S32"), ("SA-2D", "S16"), ("Type", "S8"), ("Length", "<f4")])
+        ba[0] = (b"Inflow", MESH.encode(), b"External", 1.0)
+        ba[1] = (b"Outflow", MESH.encode(), b"External", 1.0)
+        bc.create_dataset("Attributes", data=ba)
+        labelled(bc, "Polyline Info", np.array([[0, 2, 0, 1], [2, 2, 1, 1]], dtype="<i4"),
+                 [b"Point Starting Index", b"Point Count", b"Part Starting Index", b"Part Count"], b"Feature").attrs["Feature Type"] = np.bytes_(b"Polyline")
+        labelled(bc, "Polyline Parts", np.array([[0, 2], [0, 2]], dtype="<i4"), [b"Point Starting Index", b"Point Count"], b"Part")
+        labelled(bc, "Polyline Points", np.array([[0.0, 0.0], [0.0, 1.0], [2.0, 0.0], [2.0, 1.0]]), [b"X", b"Y"], b"Points")
+        bcs = m.create_group("Boundary Conditions")
+        for name, stage in [("Inflow", 12.0), ("Outflow", 11.0)]:
+            d = bcs.create_dataset(name, data=np.array([[stage, 5.0], [stage + 0.5, 7.5], [stage + 0.25, 6.0]], dtype="<f4"))
+            d.attrs["2D Area"] = np.bytes_(MESH.encode())
+            d.attrs["Columns"] = np.array([b"Stage", b"Flow"], dtype="S16")
+            d.attrs["Flow"] = np.bytes_(b"cfs")
+            d.attrs["Stage"] = np.bytes_(b"ft")
         j = f.create_group("Geometry/Junctions")
         ja = np.zeros(1, dtype=[("Name", "S16"), ("Description", "S32")])
         ja[0] = (b"Confluence", b"synthetic")

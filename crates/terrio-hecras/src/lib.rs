@@ -47,6 +47,8 @@ mod families;
 mod mesh;
 #[cfg(feature = "results")]
 mod one_d;
+#[cfg(feature = "results")]
+mod series;
 
 #[cfg(feature = "mesh")]
 pub use mesh::{
@@ -58,6 +60,8 @@ pub use one_d::{CrossSectionField, CrossSectionLayer, CrossSectionOptions};
 pub use ras_commander_rust::hdf::ResultMode;
 #[cfg(feature = "mesh")]
 pub use ras_commander_rust::mesh::{GeometryPolicy, OmissionKind};
+#[cfg(feature = "results")]
+pub use series::{FeatureSeriesOptions, SeriesField, SeriesLayer};
 pub use terrio::Layer;
 
 use ras_commander_rust::crs::EvidenceStatus;

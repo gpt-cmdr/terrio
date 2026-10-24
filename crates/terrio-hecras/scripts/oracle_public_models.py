@@ -64,6 +64,51 @@ def time_row(f):
     return None if t is None else len(t) // 2
 
 
+def norm(v):
+    return " ".join(text(v).split())
+
+
+def structure_rows(f, row):
+    """`Structure Variables` at `row` per Geometry/Structures/Attributes row, linked by name:
+    a lateral structure group is named `<River> <Reach> <RS>`, an SA/2D connection group after
+    its `Connection`. Each group must name exactly one row."""
+    table = f.get("Geometry/Structures/Attributes")
+    if table is None or row is None:
+        return {}
+    rows = table[()]
+    out = {}
+    for family in ["Lateral Structures", "SA 2D Area Conn"]:
+        g = f.get(f"{SERIES}/{family}")
+        if g is None:
+            continue
+        for name, group in g.items():
+            if not isinstance(group, h5py.Group) or "Structure Variables" not in group:
+                continue
+            if family == "Lateral Structures":
+                hits = [i for i, r in enumerate(rows) if norm(r["Type"]) == "Lateral" and f"{norm(r['River'])} {norm(r['Reach'])} {norm(r['RS'])}" == norm(name)]
+            else:
+                hits = [i for i, r in enumerate(rows) if norm(r["Connection"]) == norm(name)]
+            assert len(hits) == 1, (family, name, hits)
+            ds = group["Structure Variables"]
+            labels = [text(l[0]) for l in ds.attrs["Variable_Unit"]]
+            out[str(hits[0])] = {"labels": labels, "values_sha256": digest(ds[row])}
+    return out
+
+
+def bc_rows(f, row):
+    """Each 2D boundary-condition line's own series (named after the line) at `row`, by
+    attribute row; columns from the stored `Columns` labels."""
+    table = f.get("Geometry/Boundary Condition Lines/Attributes")
+    if table is None or row is None:
+        return {}
+    out = {}
+    for i, r in enumerate(table[()]):
+        ds = f.get(f"{SERIES}/2D Flow Areas/{norm(r['SA-2D'])}/Boundary Conditions/{norm(r['Name'])}")
+        if ds is not None and "Columns" in ds.attrs:
+            out[str(i)] = {"labels": [text(c) for c in ds.attrs["Columns"]], "values_sha256": digest(ds[row])}
+    return out
+
+
 def lines_digest(lines):
     h = hashlib.sha256()
     for coords in lines:
@@ -209,6 +254,8 @@ def main(root, out, files):
             if row is not None and "Time Date Stamp" in f.get(SERIES, {}):
                 entry["time_step"] = {"row": row, "date_stamp": text(f[f"{SERIES}/Time Date Stamp"][row]), "days": float(f[f"{SERIES}/Time"][row])}
             entry["one_d"] = one_d
+            entry["structures"] = structure_rows(f, row)
+            entry["bc_lines"] = bc_rows(f, row)
         report[rel] = entry
     Path(out).write_text(json.dumps(report, indent=2))
 

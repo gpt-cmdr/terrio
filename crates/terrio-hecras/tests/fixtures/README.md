@@ -11,7 +11,7 @@ data.
 |---|---|---|
 | `coverage_mesh.h5` | `ff8172ccd3ff76e643416faa474110e6ba8bf8ff218333e8423dbe8591491117` | 19 meshes: `Good` (two drawable cells and a one-face cell), precision and width variants, and broken topologies |
 | `coverage_mesh_nogroups.h5` | `4ed5ad7c89e14ff367a4a0ac34d2ea85c5b78913d651d62a49fe1eddedef84fd` | Legacy names-only layout (the engine refuses it) |
-| `results_mesh_xs.h5` | `56f8472ca77b9c39ccad186e82ce06862f1974696adb8949497718a21e10db6b` | Written by `scripts/make_results_fixture.py` from `coverage_mesh.h5` (this crate, MIT): the `Good` mesh with made-up static arrays, summary, time series and three cross sections with summary and unsteady results, and one river junction, in the stored HEC-RAS 6.x layout. No model data |
+| `results_mesh_xs.h5` | `b04d76a643a1f063c2b1bddc43216b6bcfed15e3ca5d96cca0f3083bda0df654` | Written by `scripts/make_results_fixture.py` from `coverage_mesh.h5` (this crate, MIT): the `Good` mesh with made-up static arrays, summary, time series and three cross sections with summary and unsteady results, two boundary-condition lines with series and one river junction, in the stored HEC-RAS 6.x layout. No model data |
 | `coverage_mesh_nogeometry.h5` | `3117dbec3e3c323ffbec8ea95728a55b3e592d5f792ab6fa15151902e0220485` | No `Geometry/2D Flow Areas` group |
 
 Real HEC-RAS models are not committed. `tests/public_models.rs` reads HEC's public example
