@@ -87,7 +87,7 @@ pub const MESH_LAYERS: &[&str] = &[MESH_CELLS, MESH_CELL_POINTS, MESH_FACES, MES
 /// The names of the geometry family layers ([`HecRasHdf::read_layer`]): `cross_sections`,
 /// `river_centerlines`, `river_bank_lines`, `river_edge_lines`, `river_flow_paths`,
 /// `storage_areas`, `structures`, `bc_lines`, `breaklines`, `refinement_regions`,
-/// `reference_lines` and `reference_points`.
+/// `reference_lines`, `reference_points`, `river_junctions` and `pump_stations`.
 pub fn family_layer_names() -> impl Iterator<Item = &'static str> {
     families::FAMILY_LAYERS.iter().map(|(name, _)| *name)
 }

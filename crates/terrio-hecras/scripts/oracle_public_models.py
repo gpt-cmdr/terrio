@@ -179,10 +179,15 @@ def main(root, out, files):
                 ("storage_areas", "Geometry/Storage Areas/Attributes", ["Name"]),
                 ("structures", "Geometry/Structures/Attributes", ["Type", "River", "Reach", "RS", "Connection"]),
                 ("bc_lines", "Geometry/Boundary Condition Lines/Attributes", ["Name", "SA-2D", "Type"]),
+                ("river_junctions", "Geometry/Junctions/Attributes", ["Name"]),
+                ("pump_stations", "Geometry/Pump Stations/Attributes", ["Name", "Inlet SA/2D", "Outlet SA/2D"]),
             ]:
                 rows = table_rows(f, table, fields)
                 if rows is not None:
                     families[layer] = {"fields": fields, "count": len(rows), "sha256": strings_digest(rows)}
+                    points = table.replace("/Attributes", "/Points")
+                    if layer in ("river_junctions", "pump_stations") and points in f:
+                        families[layer]["points_sha256"] = digest(f[points][()])
             entry["families"] = families
             one_d = {}
             xs_rows = f["Geometry/Cross Sections/Attributes"].shape[0] if "Geometry/Cross Sections/Attributes" in f else None

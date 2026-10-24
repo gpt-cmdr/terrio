@@ -388,6 +388,17 @@ fn public_models_match_the_h5py_oracle() {
                 })
                 .collect();
             assert_eq!(sha256_hex(rows.join("\n").as_bytes()), fam["sha256"].as_str().unwrap(), "{file} {layer} identities");
+            if let Some(points) = fam.get("points_sha256") {
+                let bytes: Vec<u8> = l
+                    .features
+                    .iter()
+                    .flat_map(|f| match &f.geometry {
+                        Some(Geometry::Point(c)) => [c.x.to_le_bytes(), c.y.to_le_bytes()].concat(),
+                        other => panic!("{other:?}"),
+                    })
+                    .collect();
+                assert_eq!(sha256_hex(&bytes), points.as_str().unwrap(), "{file} {layer} points");
+            }
             families_checked += l.len();
         }
         seen.extend(check.refusals_seen);

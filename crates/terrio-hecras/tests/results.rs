@@ -164,3 +164,19 @@ fn cross_section_results_at_one_row() {
         assert!(hdf.cross_sections(&options).is_err(), "{options:?}");
     }
 }
+
+#[test]
+fn river_junctions_are_points_with_their_stored_columns() {
+    let hdf = open();
+    let names = hdf.layer_names().unwrap();
+    assert!(names.iter().any(|n| n == "river_junctions"), "{names:?}");
+    assert!(!names.iter().any(|n| n == "pump_stations"), "not stored, not listed: {names:?}");
+    let j = hdf.read_layer("river_junctions").unwrap();
+    assert_eq!(fields(&j), ["source_row", "name", "description"]);
+    assert_eq!(
+        j.features[0].attributes,
+        [FieldValue::Integer(0), FieldValue::Text("Confluence".into()), FieldValue::Text("synthetic".into())]
+    );
+    assert_eq!(j.features[0].geometry, Some(terrio::Geometry::Point(terrio::vector::Coord::xy(4.0, 1.5))));
+    assert!(matches!(hdf.read_layer("pump_stations").unwrap_err(), terrio::Error::InvalidArgument(_)));
+}

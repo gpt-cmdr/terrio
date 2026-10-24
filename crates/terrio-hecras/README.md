@@ -37,6 +37,7 @@ joined values, byte budgets), and `cross_sections(&CrossSectionOptions)` joins 1
 | `bc_lines`, `breaklines`, `reference_lines` | LineString | `source_row`, stored columns (`name`, `sa_2d`, `type`, ...) | `geometry_family(...)` |
 | `refinement_regions` | Polygon | `source_row`, stored columns | `geometry_family(RefinementRegions)` |
 | `reference_points` | Point | `source_row`, stored columns | `reference_point_geometry` |
+| `river_junctions`, `pump_stations` | Point | `source_row`, stored columns (`name`, ...) | `river_junctions`, `pump_stations` |
 
 - Mesh features are identified by `mesh_name` with `cell_id` or `face_id`, the stored indices,
   which repeat across meshes. Other features are identified by `source_row`, the stored
@@ -134,7 +135,7 @@ TERRIO_HECRAS_TEST_DATA=<models> TERRIO_HECRAS_ORACLE=<models>/oracle.json cargo
 `<models>` holds HDF files of HEC's public example models (BaldEagleCrkMulti2D, Muncie,
 Chippewa_2D, DavisStormSystem, ConSpan, Bald Eagle Creek), as downloaded by ras-commander's
 `RasExamples`, with computed plan HDFs. On 29 such files the test checks 258,350 cells,
-538,946 faces and 1,203 family features against h5py: geometry, identities, CRS, units,
+538,946 faces and 1,205 family features against h5py: geometry, identities, CRS, units,
 ghost counts, and Maximum Water Surface and Maximum Face Velocity values and time rows. It also
 checks 1,370,298 joined mesh values (static cell and face arrays, Water Surface and Face Velocity
 at one output row with its time stamp, and the Water Surface maximum and its row) and 2,216

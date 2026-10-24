@@ -10,7 +10,8 @@ writes (as seen in HEC's public example plans), so the engine qualifies them as 
 - `Summary Output/2D Flow Areas/Good/Maximum Water Surface` (value and Time rows);
 - `Unsteady Time Series` `Time`, `Time Date Stamp`, cell `Water Surface` and face `Face Velocity`;
 - three cross sections (attributes and cut lines), their `Summary Output/Cross Sections/Maximum
-  Water Surface` (value, flow and time rows) and unsteady `Water Surface`.
+  Water Surface` (value, flow and time rows) and unsteady `Water Surface`;
+- one river junction (`Geometry/Junctions` attributes and point).
 
 Usage: python -I make_results_fixture.py <coverage_mesh.h5> <out.h5>
 """
@@ -103,6 +104,11 @@ def main(source, out):
                  [b"Point Starting Index", b"Point Count", b"Part Starting Index", b"Part Count"], b"Feature").attrs["Feature Type"] = np.bytes_(b"Polyline")
         labelled(xs, "Polyline Parts", np.array([[0, 2], [0, 3], [0, 2]], dtype="<i4"), [b"Point Starting Index", b"Point Count"], b"Part")
         labelled(xs, "Polyline Points", points, [b"X", b"Y"], b"Points")
+        j = f.create_group("Geometry/Junctions")
+        ja = np.zeros(1, dtype=[("Name", "S16"), ("Description", "S32")])
+        ja[0] = (b"Confluence", b"synthetic")
+        j.create_dataset("Attributes", data=ja)
+        j.create_dataset("Points", data=np.array([[4.0, 1.5]]))
         xr = ts.create_group("Cross Sections")
         ra = np.zeros(3, dtype=[("River", "S16"), ("Reach", "S16"), ("Station", "S8"), ("Name", "S16")])
         for i, r in enumerate(rows):

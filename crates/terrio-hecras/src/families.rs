@@ -1,6 +1,6 @@
 //! Line, polygon and point families stored under `Geometry/`: 1D cross-section cut lines, river
-//! lines, storage areas and structure centerlines, and the 2D boundary-condition lines,
-//! breaklines, refinement regions, reference lines and points.
+//! lines, storage areas, structure centerlines, river junctions and pump stations, and the 2D
+//! boundary-condition lines, breaklines, refinement regions, reference lines and points.
 //!
 //! The engine reads each family exactly (attribute table, Info/Parts/Points, one source
 //! identity per feature). This module only builds terrio features from them:
@@ -17,7 +17,7 @@ use crate::{HecRasHdf, error, field_name, id_field};
 use ras_commander_rust::hdf::AttributeType;
 use ras_commander_rust::hdf::lines::GeometryFamily;
 use ras_commander_rust::hdf::metadata::{CompoundTable, MetadataValue};
-use ras_commander_rust::hdf::xs_geometry::OneDLineFamily;
+use ras_commander_rust::hdf::xs_geometry::{OneDLineFamily, OneDPointData};
 use ras_commander_rust::hdf::{DEFAULT_MAX_BYTES, Identity, NumericArray, NumericValues};
 use ras_commander_rust::{Capability, Reported};
 use std::ops::Range;
@@ -30,6 +30,24 @@ pub(crate) enum Family {
     OneD(OneDLineFamily, Shape),
     TwoD(GeometryFamily, Shape),
     ReferencePoints,
+    /// A one-point-per-row family (`Attributes` plus `Points`).
+    Points(PointFamily),
+}
+
+/// The point families the engine reads with one stored point per attribute row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointFamily {
+    Junctions,
+    PumpStations,
+}
+
+impl PointFamily {
+    fn group(self) -> &'static str {
+        match self {
+            PointFamily::Junctions => "Geometry/Junctions",
+            PointFamily::PumpStations => "Geometry/Pump Stations",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +70,8 @@ pub(crate) const FAMILY_LAYERS: &[(&str, Family)] = &[
     ("refinement_regions", Family::TwoD(GeometryFamily::RefinementRegions, Shape::Polygon)),
     ("reference_lines", Family::TwoD(GeometryFamily::ReferenceLines, Shape::Line)),
     ("reference_points", Family::ReferencePoints),
+    ("river_junctions", Family::Points(PointFamily::Junctions)),
+    ("pump_stations", Family::Points(PointFamily::PumpStations)),
 ];
 
 /// `Reported` engine data as a value or an error. Unavailable (the family is not stored) is a
@@ -77,6 +97,7 @@ impl HecRasHdf {
             Family::OneD(f, _) => s.one_d_line_family(f, DEFAULT_MAX_BYTES).map(|r| r.is_unavailable()),
             Family::TwoD(f, _) => s.geometry_family(f, DEFAULT_MAX_BYTES).map(|r| r.is_unavailable()),
             Family::ReferencePoints => s.reference_point_geometry(DEFAULT_MAX_BYTES).map(|r| r.is_unavailable()),
+            Family::Points(f) => self.point_data(f).map(|r| r.is_unavailable()),
         };
         match status {
             Ok(unavailable) => Ok(!unavailable),
@@ -125,8 +146,26 @@ impl HecRasHdf {
                     builder.push(&feature.id, Geometry::Point(Coord::xy(x, y)), table)?;
                 }
             }
+            Family::Points(f) => {
+                let data = take(self.point_data(f).map_err(error::from_engine)?, f.group())?;
+                let table = Some(&data.attributes.table);
+                let points = xy(&data.points, f.group())?;
+                builder.declare(table, GeometryType::Point)?;
+                for (row, id) in data.features.iter().enumerate() {
+                    let [x, y] =
+                        *points.get(row).ok_or_else(|| terrio::Error::InvalidData(format!("{name} row {row}: no stored point")))?;
+                    builder.push(id, Geometry::Point(Coord::xy(x, y)), table)?;
+                }
+            }
         }
         Ok(builder.layer)
+    }
+
+    fn point_data(&self, family: PointFamily) -> ras_commander_rust::Result<Reported<OneDPointData>> {
+        match family {
+            PointFamily::Junctions => self.session.river_junctions(DEFAULT_MAX_BYTES),
+            PointFamily::PumpStations => self.session.pump_stations(DEFAULT_MAX_BYTES),
+        }
     }
 }
 
