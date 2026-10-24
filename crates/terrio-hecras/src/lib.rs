@@ -214,3 +214,14 @@ impl HecRasHdf {
         Ok(report.hydraulic_units)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn field_names_follow_stored_names() {
+        assert_eq!(super::field_name("Maximum Water Surface"), "maximum_water_surface");
+        assert_eq!(super::field_name("Maximum Face Velocity (ft/s)"), "maximum_face_velocity_ft_s");
+        assert_eq!(super::field_name("SA-2D"), "sa_2d");
+        assert_eq!(super::field_name("River Name"), "river_name");
+    }
+}
