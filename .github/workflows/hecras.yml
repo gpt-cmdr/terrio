@@ -46,6 +46,21 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  wasm:
+    name: WebAssembly build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/terrio-hecras
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Compiles only: the engine opens files by path, so reading in a browser needs byte sources.
+      - run: cargo build --locked --target wasm32-unknown-unknown
+
   msrv:
     name: MSRV (Rust 1.90)
     runs-on: ubuntu-latest
