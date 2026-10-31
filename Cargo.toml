@@ -39,13 +39,17 @@ acadrust = { version = "=0.6.7", default-features = false }
 flatgeobuf = { version = "6", default-features = false }
 # The version flatgeobuf's generated code is built with.
 flatbuffers = "=24.12.23"
-# GeoParquet writing; the same versions wbvector reads GeoParquet with.
-parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
-arrow-array = "58"
-arrow-schema = "58"
+# GeoParquet reading and writing. The Arrow major matches ras-commander-fast-hdf's, so its
+# record batches pass to `terrio::geoparquet` without conversion. wbvector's own GeoParquet
+# (parquet 58) is not enabled: terrio has its own driver.
+parquet = { version = "59", default-features = false, features = ["arrow", "snap"] }
+arrow-array = "59"
+arrow-schema = "59"
 # Arrow IPC streams of vector layers; already built for parquet.
-arrow-ipc = { version = "58", default-features = false }
-arrow-buffer = "58"
+arrow-ipc = { version = "59", default-features = false }
+arrow-buffer = "59"
+# Reordering the rows of GeoParquet layers (Hilbert order); already built for parquet.
+arrow-select = "59"
 bytes = "1"
 quick-xml = "0.42"
 # OpenStreetMap PBF decoding, the version wbvector uses.
@@ -65,8 +69,9 @@ ruzstd = "0.9"
 netcdf-reader = { version = "0.10", default-features = false, features = ["netcdf4"] }
 hdf5-reader = { version = "0.10", default-features = false }
 # HEC-RAS geometry and plan HDF files (the `hecras` feature): the read-only engine behind
-# ras-commander. It owns every HEC-RAS rule; terrio's driver only translates its values.
-ras-commander-fast-hdf = { version = "0.2.2", default-features = false, features = ["hdf", "mesh", "results"] }
+# ras-commander. It owns every HEC-RAS rule, layer name and field name (its Arrow layer catalog);
+# terrio's driver only translates its values. 0.3.0 is the first release with the Arrow layer API.
+ras-commander-fast-hdf = { version = "0.3.0", default-features = false, features = ["hdf", "mesh", "results"] }
 # The portable decoder: the same pixels on every platform, closer to libjpeg's than its SIMD paths.
 jpeg-decoder = { version = "0.3", default-features = false, features = ["platform_independent"] }
 # GeoPackage JPEG tiles; the version wbraster already uses.
@@ -176,7 +181,7 @@ image-webp = { opt-level = 3 }
 lz4_flex = { opt-level = 3 }
 
 [patch.crates-io]
-# Engine PRs gpt-cmdr/ras-commander-fast-hdf#40 (File Type identification, pipe families), #42
-# (crates.io hdf5-reader 0.10, one HDF5 reader) and #43, combined on one branch, until a
-# release carries them. Temporary: `cargo publish` and upstream need a crates.io engine.
-ras-commander-fast-hdf = { git = "https://github.com/gpt-cmdr/ras-commander-fast-hdf", rev = "a77db011cfe309e5539accd8a6622d989578e1a8" }
+# ras-commander-fast-hdf 0.3.0 is tagged (v0.3.0, commit 3a9e35e) but not yet on crates.io: build
+# against the tag until it is, then delete this section. Temporary: `cargo publish` needs the
+# crates.io release.
+ras-commander-fast-hdf = { git = "https://github.com/gpt-cmdr/ras-commander-fast-hdf", tag = "v0.3.0" }
